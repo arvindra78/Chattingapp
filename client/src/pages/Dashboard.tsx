@@ -1,0 +1,134 @@
+import React, { useState, useRef } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { Flame, Droplets, Trophy, Activity } from 'lucide-react';
+import { useVault } from '../context/VaultContext';
+
+import { useAuth } from '../context/AuthContext';
+
+const Dashboard: React.FC = () => {
+  const { user, unreadCount } = useAuth();
+  const { enterVaultMode } = useVault();
+  const [dragY, setDragY] = useState(0);
+  const [isHolding, setIsHolding] = useState(false);
+  const startY = useRef(0);
+
+  const getInitials = () => {
+    if (!user?.username) return 'JD';
+    return user.username.substring(0, 2).toUpperCase();
+  };
+
+  const handleStart = (e: any) => {
+    const y = e.touches ? e.touches[0].clientY : e.clientY;
+    startY.current = y;
+    setIsHolding(true);
+  };
+
+  const handleMove = (e: any) => {
+    if (!isHolding) return;
+    const y = e.touches ? e.touches[0].clientY : e.clientY;
+    const diff = y - startY.current;
+    if (diff > 0) {
+      setDragY(Math.min(diff, 150));
+      if (diff > 120) {
+        enterVaultMode();
+        handleEnd();
+      }
+    }
+  };
+
+  const handleEnd = () => {
+    setIsHolding(false);
+    setDragY(0);
+  };
+
+  return (
+    <div className="space-y-6 select-none" onMouseMove={handleMove} onMouseUp={handleEnd} onTouchMove={handleMove} onTouchEnd={handleEnd}>
+      {/* Header with Secret Trigger */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-2xl font-bold text-slate-800">Hello, {user?.username || 'Champ'}!</h2>
+          <p className="text-slate-500">Ready for today's workout?</p>
+        </div>
+        <div className="relative">
+          <motion.div 
+            style={{ y: dragY }}
+            className={`w-12 h-12 rounded-full bg-fitness-primary flex items-center justify-center text-white font-bold cursor-pointer shadow-lg z-10 relative ${isHolding ? 'scale-110' : ''}`}
+            onMouseDown={handleStart}
+            onTouchStart={handleStart}
+          >
+            {getInitials()}
+          </motion.div>
+          
+          {/* Drag Track Indicator (Hidden hint) */}
+          <AnimatePresence>
+            {isHolding && (
+              <motion.div 
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 0.1 }}
+                exit={{ opacity: 0 }}
+                className="absolute top-0 left-0 w-12 h-[150px] bg-fitness-primary rounded-full -z-0"
+              />
+            )}
+          </AnimatePresence>
+
+          {unreadCount > 0 && !isHolding && (
+            <div className="absolute -top-1 -right-1 w-5 h-5 bg-red-500 rounded-full border-2 border-fitness-bg flex items-center justify-center text-[10px] text-white font-bold animate-bounce z-20">
+              {unreadCount > 9 ? '9+' : unreadCount}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Main Stats */}
+      <div className="grid grid-cols-2 gap-4">
+        <StatCard icon={<Flame className="text-orange-500" />} label="Calories" value="1,240" unit="kcal" />
+        <StatCard icon={<Droplets className="text-blue-500" />} label="Water" value="1.5" unit="liters" />
+        <StatCard icon={<Trophy className="text-yellow-500" />} label="Streak" value="12" unit="days" />
+        <StatCard icon={<Activity className="text-fitness-primary" />} label="Steps" value="8,432" unit="steps" />
+      </div>
+
+      {/* Daily Progress */}
+      <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
+        <h3 className="font-bold mb-4">Weekly Goal</h3>
+        <div className="h-4 bg-slate-100 rounded-full overflow-hidden">
+          <motion.div 
+            className="h-full bg-fitness-primary"
+            initial={{ width: 0 }}
+            animate={{ width: '65%' }}
+            transition={{ duration: 1 }}
+          />
+        </div>
+        <p className="text-sm text-slate-500 mt-2 text-right">65% of weekly goal achieved</p>
+      </div>
+
+      {/* Recent Workouts */}
+      <div>
+        <h3 className="font-bold mb-4">Recent Workouts</h3>
+        <div className="space-y-3">
+          <WorkoutItem title="Morning Yoga" duration="30 min" color="bg-emerald-50" textColor="text-emerald-600" />
+          <WorkoutItem title="HIIT Cardio" duration="45 min" color="bg-blue-50" textColor="text-blue-600" />
+          <WorkoutItem title="Lower Body Strength" duration="60 min" color="bg-orange-50" textColor="text-orange-600" />
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const StatCard: React.FC<{ icon: React.ReactNode, label: string, value: string, unit: string }> = ({ icon, label, value, unit }) => (
+  <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100">
+    <div className="mb-2">{icon}</div>
+    <div className="text-xs text-slate-500 uppercase font-semibold">{label}</div>
+    <div className="text-xl font-bold text-slate-800">
+      {value} <span className="text-sm font-normal text-slate-400">{unit}</span>
+    </div>
+  </div>
+);
+
+const WorkoutItem: React.FC<{ title: string, duration: string, color: string, textColor: string }> = ({ title, duration, color, textColor }) => (
+  <div className={`flex items-center justify-between p-4 rounded-xl ${color}`}>
+    <div className="font-semibold text-slate-800">{title}</div>
+    <div className={`text-sm font-bold ${textColor}`}>{duration}</div>
+  </div>
+);
+
+export default Dashboard;

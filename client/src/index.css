@@ -1,0 +1,31 @@
+@import "tailwindcss";
+
+@theme {
+  --color-fitness-primary: #10b981;
+  --color-fitness-secondary: #3b82f6;
+  --color-fitness-bg: #f8fafc;
+  
+  --color-vault-bg: #0a0a0a;
+  --color-vault-card: #1a1a1a;
+  --color-vault-accent: #333333;
+}
+
+@utility glass {
+  background: rgba(255, 255, 255, 0.05);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+@utility matte-black {
+  background-color: #0a0a0a;
+}
+
+:root {
+  font-family: 'Inter', system-ui, Avenir, Helvetica, Arial, sans-serif;
+}
+
+body {
+  @apply bg-fitness-bg min-h-screen m-0 p-0;
+  -webkit-tap-highlight-color: transparent;
+}
