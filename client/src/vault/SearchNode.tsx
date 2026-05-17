@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import { Search, Loader2, MessageSquare } from 'lucide-react';
+import { buildApiUrl } from '../runtimeConfig';
 
 interface Node {
   _id: string;
@@ -28,7 +29,7 @@ const SearchNode: React.FC<{ onSelect: (node: Node) => void }> = ({ onSelect }) 
     setLoading(true);
 
     try {
-      const res = await axios.get(`${import.meta.env.VITE_API_URL}/api/sync-center/search?q=${query}`, {
+      const res = await axios.get(buildApiUrl(`/api/sync-center/search?q=${encodeURIComponent(query)}`), {
         headers: { 'x-vault-token': vaultToken }
       });
       setResults(res.data);

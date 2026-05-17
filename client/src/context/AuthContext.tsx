@@ -7,7 +7,8 @@ interface User {
   fitId: string;
 }
 
-import { io, Socket } from 'socket.io-client';
+import { Socket } from 'socket.io-client';
+import { connectSocket } from '../runtimeConfig';
 
 interface AuthContextType {
   user: User | null;
@@ -40,7 +41,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   // Listen for global messages if vault is unlocked
   useEffect(() => {
     if (vaultToken) {
-      const socket = io(import.meta.env.VITE_SOCKET_URL, {
+      const socket = connectSocket({
         auth: { token: vaultToken }
       });
       socketRef.current = socket;

@@ -4,6 +4,7 @@ import { Lock, Loader2 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useVault } from '../context/VaultContext';
 import axios from 'axios';
+import { buildApiUrl } from '../runtimeConfig';
 
 const VaultUnlock: React.FC = () => {
   const [step, setStep] = useState<'loading' | 'passcode'>('loading');
@@ -26,7 +27,7 @@ const VaultUnlock: React.FC = () => {
     setError('');
 
     try {
-      const res = await axios.post(`${import.meta.env.VITE_API_URL}/api/auth/unlock-vault`, 
+      const res = await axios.post(buildApiUrl('/api/auth/unlock-vault'), 
         { unlockCode: passcode },
         { headers: { 'x-auth-token': token } }
       );

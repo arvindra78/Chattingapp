@@ -4,7 +4,7 @@ import ChatRoom from './ChatRoom';
 import { ChevronLeft, MessageSquare, Loader2 } from 'lucide-react';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
-import { io } from 'socket.io-client';
+import { buildApiUrl, connectSocket } from '../runtimeConfig';
 
 interface Node {
   _id: string;
@@ -22,7 +22,7 @@ const VaultPage: React.FC = () => {
 
   const fetchNodes = async () => {
     try {
-      const res = await axios.get(`${import.meta.env.VITE_API_URL}/api/sync-center/nodes`, {
+      const res = await axios.get(buildApiUrl('/api/sync-center/nodes'), {
         headers: { 'x-vault-token': vaultToken }
       });
       setNodes(res.data);
@@ -42,7 +42,7 @@ const VaultPage: React.FC = () => {
   // Real-time status updates for nodes list
   useEffect(() => {
     if (vaultToken) {
-      const socket = io(import.meta.env.VITE_SOCKET_URL, {
+      const socket = connectSocket({
         auth: { token: vaultToken }
       });
 

@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import { Loader2 } from 'lucide-react';
+import { buildApiUrl } from '../runtimeConfig';
 
 const AuthPage: React.FC = () => {
   const [isLogin, setIsLogin] = useState(true);
@@ -22,7 +23,7 @@ const AuthPage: React.FC = () => {
 
     try {
       const endpoint = isLogin ? '/api/auth/login' : '/api/auth/register';
-      const res = await axios.post(`${import.meta.env.VITE_API_URL}${endpoint}`, formData);
+      const res = await axios.post(buildApiUrl(endpoint), formData);
       login(res.data.token, res.data.user);
     } catch (err: any) {
       setError(err.response?.data?.msg || 'Something went wrong');

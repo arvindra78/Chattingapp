@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { io, Socket } from 'socket.io-client';
+import { Socket } from 'socket.io-client';
 import { useAuth } from '../context/AuthContext';
 import { Send, Loader2, User, Check, CheckCheck, CornerUpLeft, X } from 'lucide-react';
 import axios from 'axios';
 import { motion, AnimatePresence } from 'framer-motion';
+import { buildApiUrl, connectSocket } from '../runtimeConfig';
 
 interface Message {
   _id: string;
@@ -40,7 +41,7 @@ const ChatRoom: React.FC<{ receiverId: string, receiverAlias: string }> = ({ rec
 
     const fetchHistory = async () => {
       try {
-        const res = await axios.get(`${import.meta.env.VITE_API_URL}/api/sync-center/history/${receiverId}`, {
+        const res = await axios.get(buildApiUrl(`/api/sync-center/history/${receiverId}`), {
           headers: { 'x-vault-token': vaultToken }
         });
         setMessages(res.data);
@@ -54,7 +55,7 @@ const ChatRoom: React.FC<{ receiverId: string, receiverAlias: string }> = ({ rec
 
     fetchHistory();
 
-    const socket = io(import.meta.env.VITE_SOCKET_URL, { auth: { token: vaultToken } });
+    const socket = connectSocket({ auth: { token: vaultToken } });
     socketRef.current = socket;
 
     socket.on('message', (msg: Message) => {
@@ -178,7 +179,7 @@ const ChatRoom: React.FC<{ receiverId: string, receiverAlias: string }> = ({ rec
                 drag="x"
                 dragConstraints={{ left: 0, right: 0 }}
                 dragElastic={{ left: msg.senderId === user?.id ? 0.5 : 0, right: msg.senderId === user?.id ? 0 : 0.5 }}
-                onDrag={(e, info) => {
+                onDrag={(_, info) => {
                   const threshold = 60;
                   const drag = info.offset.x;
                   // If sent by me, swipe left. If sent by peer, swipe right.
@@ -188,7 +189,7 @@ const ChatRoom: React.FC<{ receiverId: string, receiverAlias: string }> = ({ rec
                     if (navigator.vibrate) navigator.vibrate(10);
                   }
                 }}
-                onDragEnd={(e, info) => {
+                onDragEnd={(_, info) => {
                   const threshold = 80;
                   const drag = info.offset.x;
                   if ((msg.senderId === user?.id && drag < -threshold) || 
