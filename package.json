@@ -3,14 +3,17 @@
   "version": "1.0.0",
   "description": "Fitness tracking app with a hidden encrypted chat vault.",
   "main": "server/index.js",
+  "engines": {
+    "node": "22.x"
+  },
   "scripts": {
-    "postinstall": "npm install --prefix server && npm install --prefix client",
+    "postinstall": "npm install --prefix server",
     "start": "npm start --prefix server",
     "server": "npm run dev --prefix server",
     "client": "npm run dev --prefix client",
     "dev": "concurrently \"npm run server\" \"npm run client\"",
     "install-all": "npm install && npm install --prefix server && npm install --prefix client",
-    "build": "npm run build --prefix client"
+    "build": "npm install --include=dev --prefix client && npm run build --prefix client"
   },
   "devDependencies": {
     "concurrently": "^8.2.2"
