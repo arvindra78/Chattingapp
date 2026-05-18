@@ -8,6 +8,7 @@ const AuthPage: React.FC = () => {
   const [isLogin, setIsLogin] = useState(true);
   const [formData, setFormData] = useState({
     username: '',
+    fitId: '',
     email: '',
     password: '',
     unlockCode: ''
@@ -50,6 +51,20 @@ const AuthPage: React.FC = () => {
               onChange={(e) => setFormData({...formData, username: e.target.value})}
               required
             />
+          )}
+          {!isLogin && (
+            <div className="space-y-1">
+              <input 
+                type="text"
+                placeholder="Choose FitID (e.g. FIT-ARVIN01)"
+                className="w-full p-4 bg-slate-50 border border-slate-100 rounded-xl focus:outline-none focus:border-fitness-primary transition-colors uppercase"
+                value={formData.fitId}
+                onChange={(e) => setFormData({...formData, fitId: e.target.value.toUpperCase()})}
+                required
+                maxLength={24}
+              />
+              <p className="text-[10px] text-slate-400 px-2 italic">This unique FitID is how trusted nodes will find you.</p>
+            </div>
           )}
           <input 
             type="email"

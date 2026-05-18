@@ -8,8 +8,4 @@ const generateAlias = () => {
   return `${prefix}${suffix}${number}`;
 };
 
-const generateFitId = () => {
-  return 'FIT-' + Math.random().toString(36).substr(2, 9).toUpperCase();
-};
-
-module.exports = { generateAlias, generateFitId };
+module.exports = { generateAlias };

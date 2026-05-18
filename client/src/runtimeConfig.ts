@@ -14,4 +14,12 @@ export const buildApiUrl = (path: string) => {
 };
 
 export const connectSocket = (options: Partial<ManagerOptions & SocketOptions> = {}) =>
-  io(socketUrl, options);
+  io(socketUrl, {
+    transports: ['polling', 'websocket'],
+    upgrade: true,
+    timeout: 20000,
+    reconnection: true,
+    reconnectionAttempts: 8,
+    reconnectionDelay: 1000,
+    ...options
+  });

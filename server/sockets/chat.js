@@ -5,12 +5,16 @@ const { encrypt, decrypt } = require('../utils/encryption');
 
 module.exports = (io) => {
   io.use((socket, next) => {
-    const token = socket.handshake.auth.token;
-    if (!token) return next(new Error('Authentication error'));
-    
     try {
-      const decoded = jwt.verify(token, process.env.VAULT_SECRET);
+      const vaultToken = socket.handshake.auth.token;
+      const authToken = socket.handshake.auth.authToken;
+      const token = vaultToken || authToken;
+      if (!token) return next(new Error('Authentication error'));
+
+      const secret = vaultToken ? process.env.VAULT_SECRET : process.env.JWT_SECRET;
+      const decoded = jwt.verify(token, secret);
       socket.user = decoded.user;
+      socket.canAccessVault = Boolean(vaultToken);
       next();
     } catch (err) {
       next(new Error('Authentication error'));
@@ -19,22 +23,33 @@ module.exports = (io) => {
 
   io.on('connection', async (socket) => {
     const userId = socket.user.id;
+    const notificationRoom = `notify:${userId}`;
+    const vaultRoom = `vault:${userId}`;
     console.log(`[Socket] Vault connection: ${userId}`);
     
-    // Join private room for targeted messaging
-    socket.join(userId);
+    socket.join(notificationRoom);
+    if (socket.canAccessVault) {
+      socket.join(vaultRoom);
+    }
     
     try {
-      // Set user online
-      await User.findByIdAndUpdate(userId, { isOnline: true });
-      socket.broadcast.emit('userStatus', { userId, isOnline: true });
+      const activeConnections = io.sockets.adapter.rooms.get(notificationRoom)?.size || 0;
+      if (activeConnections === 1) {
+        await User.findByIdAndUpdate(userId, { isOnline: true });
+        socket.broadcast.emit('userStatus', { userId, isOnline: true });
+      }
     } catch (err) {
       console.error('[Socket] Status Update Error:', err);
     }
 
-    socket.on('sendMessage', async ({ receiverId, message, replyTo }) => {
+    socket.on('sendMessage', async ({ receiverId, message, replyTo }, acknowledge) => {
       console.log(`[Socket] Message from ${userId} to ${receiverId}`);
       try {
+        if (!socket.canAccessVault) {
+          socket.emit('error', { msg: 'Vault access required' });
+          if (typeof acknowledge === 'function') acknowledge({ ok: false, msg: 'Vault access required' });
+          return;
+        }
         if (!message || !receiverId) return;
 
         await User.bulkWrite([
@@ -61,6 +76,7 @@ module.exports = (io) => {
         });
         await newMessage.save();
 
+        const sender = await User.findById(userId).select('alias').lean();
         let populatedMessage = await newMessage.populate('replyTo', 'encryptedMessage senderId');
         const msgObj = populatedMessage.toObject();
         msgObj.message = message;
@@ -69,16 +85,25 @@ module.exports = (io) => {
           delete msgObj.replyTo.encryptedMessage;
         }
 
-        // Emit to both sender and receiver rooms
-        io.to(receiverId).to(userId).emit('message', msgObj);
+        io.to(`notify:${receiverId}`).emit('vaultNotification', {
+          senderId: userId,
+          senderAlias: sender?.alias || 'Node',
+          createdAt: newMessage.createdAt
+        });
+
+        // Emit full message only to unlocked vault sessions
+        io.to(`vault:${receiverId}`).to(`vault:${userId}`).emit('message', msgObj);
+        if (typeof acknowledge === 'function') acknowledge({ ok: true, messageId: newMessage.id });
       } catch (err) {
         console.error('[Socket] Send Message Error:', err);
         socket.emit('error', { msg: 'Failed to send message' });
+        if (typeof acknowledge === 'function') acknowledge({ ok: false, msg: 'Failed to send message' });
       }
     });
 
     socket.on('reactToMessage', async ({ messageId, emoji, receiverId }) => {
       try {
+        if (!socket.canAccessVault) return;
         const message = await Message.findById(messageId);
         if (!message) return;
 
@@ -102,26 +127,31 @@ module.exports = (io) => {
 
     socket.on('markSeen', async ({ senderId }) => {
       try {
+        if (!socket.canAccessVault) return;
         await Message.updateMany(
           { senderId, receiverId: userId, seen: false },
           { seen: true }
         );
         // Notify the original sender that their messages were seen
-        io.to(senderId).emit('messagesSeen', { seenBy: userId });
+        io.to(`vault:${senderId}`).emit('messagesSeen', { seenBy: userId });
       } catch (err) {
         console.error('[Socket] Mark Seen Error:', err);
       }
     });
 
     socket.on('typing', ({ receiverId, isTyping }) => {
-      socket.to(receiverId).emit('typing', { senderId: userId, isTyping });
+      if (!socket.canAccessVault) return;
+      socket.to(`vault:${receiverId}`).emit('typing', { senderId: userId, isTyping });
     });
 
     socket.on('disconnect', async () => {
       console.log(`[Socket] Vault disconnect: ${userId}`);
       try {
-        await User.findByIdAndUpdate(userId, { isOnline: false, lastSeen: new Date() });
-        socket.broadcast.emit('userStatus', { userId, isOnline: false });
+        const remainingConnections = io.sockets.adapter.rooms.get(notificationRoom)?.size || 0;
+        if (remainingConnections === 0) {
+          await User.findByIdAndUpdate(userId, { isOnline: false, lastSeen: new Date() });
+          socket.broadcast.emit('userStatus', { userId, isOnline: false });
+        }
       } catch (err) {
         console.error('[Socket] Disconnect Status Error:', err);
       }

@@ -1,12 +1,12 @@
 import React, { useState, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Flame, Droplets, Trophy, Activity } from 'lucide-react';
+import { Flame, Droplets, Trophy, Activity, BellRing, ChevronDown } from 'lucide-react';
 import { useVault } from '../context/VaultContext';
 
 import { useAuth } from '../context/AuthContext';
 
 const Dashboard: React.FC = () => {
-  const { user, unreadCount } = useAuth();
+  const { user, unreadCount, latestWorkoutAlert } = useAuth();
   const { enterVaultMode } = useVault();
   const [dragY, setDragY] = useState(0);
   const [isHolding, setIsHolding] = useState(false);
@@ -78,6 +78,37 @@ const Dashboard: React.FC = () => {
           )}
         </div>
       </div>
+
+      {unreadCount > 0 && (
+        <motion.div
+          initial={{ opacity: 0, y: 12 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="rounded-3xl border border-amber-100 bg-gradient-to-r from-amber-50 via-white to-emerald-50 p-5 shadow-sm"
+        >
+          <div className="flex items-start gap-4">
+            <div className="mt-1 flex h-11 w-11 items-center justify-center rounded-2xl bg-amber-100 text-amber-600">
+              <BellRing size={20} />
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2 text-[11px] font-black uppercase tracking-[0.2em] text-amber-500">
+                <span>Workout Alert</span>
+                <span className="rounded-full bg-amber-500 px-2 py-0.5 text-white">
+                  {unreadCount > 9 ? '9+' : unreadCount}
+                </span>
+              </div>
+              <h3 className="mt-2 text-base font-bold text-slate-800">
+                {latestWorkoutAlert ? `${latestWorkoutAlert.senderAlias} sent a recovery ping` : 'A private recovery ping just arrived'}
+              </h3>
+              <p className="mt-1 text-sm text-slate-500">
+                Pull down the profile bubble to open Advanced Metrics and review your secure messages.
+              </p>
+            </div>
+            <div className="flex items-center gap-1 text-emerald-500">
+              <ChevronDown size={18} />
+            </div>
+          </div>
+        </motion.div>
+      )}
 
       {/* Main Stats */}
       <div className="grid grid-cols-2 gap-4">

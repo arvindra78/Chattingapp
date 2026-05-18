@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const Message = require('../models/Message');
 const User = require('../models/User');
-const { vaultAuth } = require('../middleware/auth');
+const { auth, vaultAuth } = require('../middleware/auth');
 const { encrypt, decrypt } = require('../utils/encryption');
 
 const getNicknameForUser = (nicknameMap, userId) => {
@@ -10,6 +10,69 @@ const getNicknameForUser = (nicknameMap, userId) => {
   if (typeof nicknameMap.get === 'function') return nicknameMap.get(userId) || null;
   return nicknameMap[userId] || null;
 };
+
+const emitVaultMessage = async ({ io, senderId, receiverId, newMessage, plaintextMessage }) => {
+  const sender = await User.findById(senderId).select('alias').lean();
+  const populatedMessage = await newMessage.populate('replyTo', 'encryptedMessage senderId');
+  const msgObj = populatedMessage.toObject();
+  msgObj.message = plaintextMessage;
+  if (msgObj.replyTo) {
+    msgObj.replyTo.message = decrypt(msgObj.replyTo.encryptedMessage);
+    delete msgObj.replyTo.encryptedMessage;
+  }
+
+  io.to(`notify:${receiverId}`).emit('vaultNotification', {
+    senderId,
+    senderAlias: sender?.alias || 'Node',
+    createdAt: newMessage.createdAt
+  });
+
+  io.to(`vault:${receiverId}`).to(`vault:${senderId}`).emit('message', msgObj);
+  return msgObj;
+};
+
+const persistMessage = async ({ senderId, receiverId, message, replyTo }) => {
+  await User.bulkWrite([
+    {
+      updateOne: {
+        filter: { _id: senderId },
+        update: { $addToSet: { vaultContacts: receiverId } }
+      }
+    },
+    {
+      updateOne: {
+        filter: { _id: receiverId },
+        update: { $addToSet: { vaultContacts: senderId } }
+      }
+    }
+  ]);
+
+  const encryptedMessage = encrypt(message);
+  const newMessage = new Message({
+    senderId,
+    receiverId,
+    encryptedMessage,
+    replyTo
+  });
+  await newMessage.save();
+  return newMessage;
+};
+
+// @route   GET api/sync-center/unread-count
+// @desc    Get unread private message count for the logged-in user
+router.get('/unread-count', auth, async (req, res) => {
+  try {
+    const unreadCount = await Message.countDocuments({
+      receiverId: req.user.id,
+      seen: false
+    });
+
+    res.json({ unreadCount });
+  } catch (err) {
+    console.error('Unread Count Error:', err);
+    res.status(500).send('Server error');
+  }
+});
 
 // @route   GET api/sync-center/nodes
 // @desc    Get users you have messaged or received messages from
@@ -85,6 +148,40 @@ router.delete('/history/:otherUserId', vaultAuth, async (req, res) => {
     });
   } catch (err) {
     console.error('Clear History Error:', err);
+    res.status(500).send('Server error');
+  }
+});
+
+// @route   POST api/sync-center/message
+// @desc    Send a private message with HTTP fallback support
+router.post('/message', vaultAuth, async (req, res) => {
+  try {
+    const senderId = req.vaultUser.id;
+    const { receiverId, message, replyTo } = req.body;
+    const trimmedMessage = typeof message === 'string' ? message.trim() : '';
+
+    if (!receiverId || !trimmedMessage) {
+      return res.status(400).json({ msg: 'receiverId and message are required' });
+    }
+
+    const newMessage = await persistMessage({
+      senderId,
+      receiverId,
+      message: trimmedMessage,
+      replyTo
+    });
+
+    const msgObj = await emitVaultMessage({
+      io: req.app.get('io'),
+      senderId,
+      receiverId,
+      newMessage,
+      plaintextMessage: trimmedMessage
+    });
+
+    res.status(201).json(msgObj);
+  } catch (err) {
+    console.error('HTTP Send Message Error:', err);
     res.status(500).send('Server error');
   }
 });

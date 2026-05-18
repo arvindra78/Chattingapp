@@ -1,6 +1,6 @@
 import React from 'react';
 import { NavLink, Outlet } from 'react-router-dom';
-import { MessageSquare, Search, UserPlus, Settings } from 'lucide-react';
+import { MessageSquare, Search, UserPlus, Settings, ChevronLeft } from 'lucide-react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
@@ -9,17 +9,29 @@ function cn(...inputs: ClassValue[]) {
 }
 
 import { useAuth } from '../context/AuthContext';
+import { useVault } from '../context/VaultContext';
 
 const VaultLayout: React.FC = () => {
   const { unreadCount } = useAuth();
+  const { exitVaultMode } = useVault();
 
   return (
     <div className="flex flex-col min-h-screen bg-vault-bg text-white">
       {/* Stealth Top Bar */}
-      <header className="fixed top-0 w-full h-14 flex items-center px-4 bg-black/50 backdrop-blur-lg border-b border-white/5 z-50">
+      <header className="fixed top-0 w-full h-14 flex items-center justify-between px-4 bg-black/50 backdrop-blur-lg border-b border-white/5 z-50">
+        <button
+          type="button"
+          onClick={exitVaultMode}
+          className="flex items-center gap-1 rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-[10px] uppercase tracking-[0.2em] text-white/40 transition-colors hover:text-white"
+          aria-label="Back to fitness app"
+        >
+          <ChevronLeft size={14} />
+          <span>Back</span>
+        </button>
         <h1 className="text-sm font-mono tracking-widest text-white/40 uppercase">
           System Core
         </h1>
+        <div className="w-[68px]" />
       </header>
 
       {/* Content */}

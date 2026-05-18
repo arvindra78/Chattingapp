@@ -13,7 +13,7 @@ const userSchema = new mongoose.Schema({
   
   // Stealth Features
   alias: { type: String, unique: true },
-  fitId: { type: String, unique: true },
+  fitId: { type: String, required: true, unique: true, trim: true, uppercase: true },
   avatarSeed: { type: String },
   unlockCode: { type: String, required: true }, // Passcode for the vault
   

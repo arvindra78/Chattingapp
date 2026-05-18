@@ -28,7 +28,7 @@ const ChatRoom: React.FC<{
   onBack: () => void,
   onNicknameSaved?: (nickname: string | null) => void
 }> = ({ receiverId, receiverAlias, receiverNickname, onBack, onNicknameSaved }) => {
-  const { vaultToken, user, clearUnread } = useAuth();
+  const { vaultToken, user, clearUnread, refreshUnreadCount } = useAuth();
   const [messages, setMessages] = useState<Message[]>([]);
   const [newMessage, setNewMessage] = useState('');
   const [loading, setLoading] = useState(true);
@@ -38,6 +38,9 @@ const ChatRoom: React.FC<{
   const [showReactions, setShowReactions] = useState<string | null>(null);
   const [isClearingChat, setIsClearingChat] = useState(false);
   const [nickname, setNickname] = useState(receiverNickname || '');
+  const [nicknameDraft, setNicknameDraft] = useState(receiverNickname || '');
+  const [isEditingNickname, setIsEditingNickname] = useState(false);
+  const [isConfirmingClear, setIsConfirmingClear] = useState(false);
   const [isSavingNickname, setIsSavingNickname] = useState(false);
 
   const socketRef = useRef<Socket | null>(null);
@@ -48,13 +51,17 @@ const ChatRoom: React.FC<{
   useEffect(() => {
     clearUnread();
 
+    const socket = connectSocket({ auth: { token: vaultToken } });
+    socketRef.current = socket;
+
     const fetchHistory = async () => {
       try {
         const res = await axios.get(buildApiUrl(`/api/sync-center/history/${receiverId}`), {
           headers: { 'x-vault-token': vaultToken }
         });
         setMessages(res.data);
-        if (socketRef.current) socketRef.current.emit('markSeen', { senderId: receiverId });
+        socket.emit('markSeen', { senderId: receiverId });
+        await refreshUnreadCount();
       } catch (err) {
         console.error(err);
       } finally {
@@ -64,9 +71,6 @@ const ChatRoom: React.FC<{
 
     fetchHistory();
 
-    const socket = connectSocket({ auth: { token: vaultToken } });
-    socketRef.current = socket;
-
     socket.on('message', (msg: Message) => {
       if ((msg.senderId === receiverId && msg.receiverId === user?.id) || 
           (msg.senderId === user?.id && msg.receiverId === receiverId)) {
@@ -74,6 +78,7 @@ const ChatRoom: React.FC<{
         if (msg.senderId === receiverId) {
           socket.emit('markSeen', { senderId: receiverId });
           clearUnread();
+          refreshUnreadCount();
         }
       }
     });
@@ -107,6 +112,9 @@ const ChatRoom: React.FC<{
 
   useEffect(() => {
     setNickname(receiverNickname || '');
+    setNicknameDraft(receiverNickname || '');
+    setIsEditingNickname(false);
+    setIsConfirmingClear(false);
   }, [receiverNickname, receiverId]);
 
   const handleTyping = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -122,15 +130,59 @@ const ChatRoom: React.FC<{
 
   const handleSend = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newMessage.trim() || !socketRef.current) return;
+    const trimmedMessage = newMessage.trim();
+    if (!trimmedMessage) return;
 
-    socketRef.current.emit('sendMessage', {
+    const payload = {
       receiverId,
-      message: newMessage,
+      message: trimmedMessage,
       replyTo: replyingTo?._id
-    });
+    };
+
+    const sendViaHttp = async () => {
+      await axios.post(buildApiUrl('/api/sync-center/message'), payload, {
+        headers: { 'x-vault-token': vaultToken }
+      });
+    };
+
+    const sendMessage = async () => {
+      const socket = socketRef.current;
+
+      if (!socket || !socket.connected) {
+        await sendViaHttp();
+        return;
+      }
+
+      const ack = await new Promise<{ ok: boolean; msg?: string }>((resolve) => {
+        let settled = false;
+        const timer = window.setTimeout(() => {
+          if (!settled) {
+            settled = true;
+            resolve({ ok: false, msg: 'Socket timeout' });
+          }
+        }, 4000);
+
+        socket.emit('sendMessage', payload, (response: { ok: boolean; msg?: string }) => {
+          if (!settled) {
+            settled = true;
+            window.clearTimeout(timer);
+            resolve(response);
+          }
+        });
+      });
+
+      if (!ack.ok) {
+        await sendViaHttp();
+      }
+    };
+
     setNewMessage('');
     setReplyTo(null);
+
+    sendMessage().catch((err) => {
+      console.error('Send Message Error:', err);
+      window.alert('Failed to send message. Please check your connection and try again.');
+    });
   };
 
   const handleLongPressStart = (msgId: string) => {
@@ -150,9 +202,6 @@ const ChatRoom: React.FC<{
   };
 
   const handleClearChat = async () => {
-    const confirmed = window.confirm(`Clear all messages with ${nickname || receiverAlias}? This keeps the DM contact but permanently deletes the chat history.`);
-    if (!confirmed) return;
-
     setIsClearingChat(true);
 
     try {
@@ -162,6 +211,8 @@ const ChatRoom: React.FC<{
       setMessages([]);
       setReplyTo(null);
       setShowReactions(null);
+      setIsConfirmingClear(false);
+      await refreshUnreadCount();
     } catch (err) {
       console.error('Clear Chat Error:', err);
       window.alert('Failed to clear chat history. Please try again.');
@@ -170,10 +221,7 @@ const ChatRoom: React.FC<{
     }
   };
 
-  const handleNicknameEdit = async () => {
-    const nextNickname = window.prompt('Set a nickname for this chat. Leave it empty to remove the custom name.', nickname || receiverAlias);
-    if (nextNickname === null) return;
-
+  const saveNickname = async (nextNickname: string) => {
     setIsSavingNickname(true);
 
     try {
@@ -184,6 +232,8 @@ const ChatRoom: React.FC<{
       );
       const savedNickname = res.data.nickname || '';
       setNickname(savedNickname);
+      setNicknameDraft(savedNickname);
+      setIsEditingNickname(false);
       onNicknameSaved?.(savedNickname || null);
     } catch (err) {
       console.error('Nickname Update Error:', err);
@@ -193,6 +243,14 @@ const ChatRoom: React.FC<{
     }
   };
 
+  const handleNicknameSave = async () => {
+    await saveNickname(nicknameDraft);
+  };
+
+  const handleNicknameDelete = async () => {
+    await saveNickname('');
+  };
+
   if (loading) return <div className="h-full flex items-center justify-center"><Loader2 className="animate-spin text-white/20" /></div>;
 
   const displayName = nickname || receiverAlias;
@@ -200,7 +258,8 @@ const ChatRoom: React.FC<{
   return (
     <div className="flex flex-col h-full bg-vault-bg text-white font-sans overflow-hidden">
       {/* Header */}
-      <div className="p-4 border-b border-white/5 flex items-center gap-3 bg-black/20 backdrop-blur-md">
+      <div className="border-b border-white/5 bg-black/20 backdrop-blur-md">
+        <div className="flex items-center gap-3 p-4">
         <button
           type="button"
           onClick={onBack}
@@ -229,7 +288,10 @@ const ChatRoom: React.FC<{
         </div>
         <button
           type="button"
-          onClick={handleNicknameEdit}
+          onClick={() => {
+            setIsConfirmingClear(false);
+            setIsEditingNickname((prev) => !prev);
+          }}
           disabled={isSavingNickname}
           className="ml-auto flex h-10 w-10 items-center justify-center rounded-full border border-white/10 bg-white/5 text-white/40 transition-colors hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
           aria-label="Edit chat nickname"
@@ -238,13 +300,112 @@ const ChatRoom: React.FC<{
         </button>
         <button
           type="button"
-          onClick={handleClearChat}
+          onClick={() => {
+            setIsEditingNickname(false);
+            setIsConfirmingClear((prev) => !prev);
+          }}
           disabled={isClearingChat}
           className="flex h-10 w-10 items-center justify-center rounded-full border border-white/10 bg-white/5 text-white/40 transition-colors hover:text-red-400 disabled:cursor-not-allowed disabled:opacity-40"
           aria-label="Clear chat history"
         >
           {isClearingChat ? <Loader2 size={16} className="animate-spin" /> : <Trash2 size={16} />}
         </button>
+        </div>
+
+        <AnimatePresence initial={false}>
+          {isEditingNickname && (
+            <motion.div
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: 'auto', opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              className="overflow-hidden border-t border-white/5 px-4 pb-4"
+            >
+              <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                <div className="mb-3 text-[10px] uppercase tracking-[0.2em] text-white/30">
+                  Custom chat name
+                </div>
+                <input
+                  type="text"
+                  value={nicknameDraft}
+                  onChange={(e) => setNicknameDraft(e.target.value.slice(0, 40))}
+                  placeholder={receiverAlias}
+                  className="w-full rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-white placeholder:text-white/20 focus:outline-none focus:border-white/20"
+                />
+                <div className="mt-3 flex items-center justify-between text-[10px] uppercase tracking-[0.15em] text-white/20">
+                  <span>{nicknameDraft.length}/40</span>
+                  {nickname ? <span>Original: {receiverAlias}</span> : <span>Visible only to you</span>}
+                </div>
+                <div className="mt-4 flex gap-2">
+                  <button
+                    type="button"
+                    onClick={handleNicknameSave}
+                    disabled={isSavingNickname}
+                    className="flex-1 rounded-xl bg-white px-4 py-3 text-xs font-bold uppercase tracking-[0.2em] text-black disabled:opacity-40"
+                  >
+                    {isSavingNickname ? 'Saving...' : 'Save'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleNicknameDelete}
+                    disabled={isSavingNickname || !nickname}
+                    className="rounded-xl border border-red-400/30 px-4 py-3 text-xs font-bold uppercase tracking-[0.2em] text-red-300 disabled:opacity-30"
+                  >
+                    Delete
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setNicknameDraft(nickname);
+                      setIsEditingNickname(false);
+                    }}
+                    disabled={isSavingNickname}
+                    className="rounded-xl border border-white/10 px-4 py-3 text-xs font-bold uppercase tracking-[0.2em] text-white/50 disabled:opacity-30"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        <AnimatePresence initial={false}>
+          {isConfirmingClear && (
+            <motion.div
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: 'auto', opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              className="overflow-hidden border-t border-white/5 px-4 pb-4"
+            >
+              <div className="rounded-2xl border border-red-400/20 bg-red-500/5 p-4">
+                <div className="mb-3 text-[10px] uppercase tracking-[0.2em] text-red-300/80">
+                  Clear chat history
+                </div>
+                <p className="text-sm text-white/70">
+                  Delete all messages with <span className="font-mono text-white">{displayName}</span>. The DM contact will stay in your list.
+                </p>
+                <div className="mt-4 flex gap-2">
+                  <button
+                    type="button"
+                    onClick={handleClearChat}
+                    disabled={isClearingChat}
+                    className="flex-1 rounded-xl bg-red-400 px-4 py-3 text-xs font-bold uppercase tracking-[0.2em] text-black disabled:opacity-40"
+                  >
+                    {isClearingChat ? 'Deleting...' : 'Delete chat'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsConfirmingClear(false)}
+                    disabled={isClearingChat}
+                    className="rounded-xl border border-white/10 px-4 py-3 text-xs font-bold uppercase tracking-[0.2em] text-white/50 disabled:opacity-30"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
 
       {/* Messages */}

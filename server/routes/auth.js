@@ -3,17 +3,28 @@ const router = express.Router();
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
-const { generateAlias, generateFitId } = require('../utils/alias');
+const { generateAlias } = require('../utils/alias');
 const { auth } = require('../middleware/auth');
 
 // @route   POST api/auth/register
 // @desc    Register user
 router.post('/register', async (req, res) => {
-  const { username, email, password, unlockCode } = req.body;
+  const { username, email, password, unlockCode, fitId } = req.body;
+  const normalizedFitId = (fitId || '').trim().toUpperCase();
 
   try {
-    let user = await User.findOne({ $or: [{ email }, { username }] });
-    if (user) return res.status(400).json({ msg: 'User already exists' });
+    if (!normalizedFitId) {
+      return res.status(400).json({ msg: 'FitID is required' });
+    }
+
+    let user = await User.findOne({ email });
+    if (user) return res.status(400).json({ msg: 'Email already exists' });
+
+    user = await User.findOne({ username });
+    if (user) return res.status(400).json({ msg: 'Username already exists' });
+
+    user = await User.findOne({ fitId: normalizedFitId });
+    if (user) return res.status(400).json({ msg: 'FitID already taken' });
 
     user = new User({
       username,
@@ -21,7 +32,7 @@ router.post('/register', async (req, res) => {
       passwordHash: await bcrypt.hash(password, 10),
       unlockCode: await bcrypt.hash(unlockCode, 10),
       alias: generateAlias(),
-      fitId: generateFitId(),
+      fitId: normalizedFitId,
       avatarSeed: Math.random().toString(36).substring(7)
     });
 
