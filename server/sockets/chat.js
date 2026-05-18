@@ -37,6 +37,21 @@ module.exports = (io) => {
       try {
         if (!message || !receiverId) return;
 
+        await User.bulkWrite([
+          {
+            updateOne: {
+              filter: { _id: userId },
+              update: { $addToSet: { vaultContacts: receiverId } }
+            }
+          },
+          {
+            updateOne: {
+              filter: { _id: receiverId },
+              update: { $addToSet: { vaultContacts: userId } }
+            }
+          }
+        ]);
+
         const encryptedMessage = encrypt(message);
         const newMessage = new Message({
           senderId: userId,

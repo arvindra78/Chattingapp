@@ -6,14 +6,14 @@ const messageSchema = new mongoose.Schema({
   encryptedMessage: { type: String, required: true },
   replyTo: { type: mongoose.Schema.Types.ObjectId, ref: 'Message' },
   reactions: [{
+    _id: false,
     userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     emoji: String
   }],
-  
-  // Status
-  delivered: { type: Boolean, default: false },
-  seen: { type: Boolean, default: false },
-  deletedFor: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }]
-}, { timestamps: true });
+  seen: { type: Boolean, default: false }
+}, {
+  timestamps: { createdAt: true, updatedAt: false },
+  versionKey: false
+});
 
 module.exports = mongoose.model('Message', messageSchema);

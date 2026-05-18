@@ -7,7 +7,11 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
-require('dotenv').config();
+
+const rootEnvPath = path.resolve(__dirname, '../.env');
+const serverEnvPath = path.resolve(__dirname, '.env');
+const resolvedEnvPath = fs.existsSync(rootEnvPath) ? rootEnvPath : serverEnvPath;
+require('dotenv').config({ path: resolvedEnvPath });
 
 const app = express();
 const server = http.createServer(app);
@@ -62,9 +66,17 @@ app.get('/health', (_req, res) => {
 });
 
 // Database Connection
+if (!process.env.MONGO_URI) {
+  console.error(`Missing MONGO_URI. Create ${resolvedEnvPath} or set the environment variable before starting the server.`);
+  process.exit(1);
+}
+
 mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log('Connected to MongoDB'))
-  .catch(err => console.error('MongoDB connection error:', err));
+  .catch(err => {
+    console.error('MongoDB connection error:', err);
+    process.exit(1);
+  });
 
 // Routes
 app.use('/api/auth', require('./routes/auth'));

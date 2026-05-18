@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import SearchNode from './SearchNode';
 import ChatRoom from './ChatRoom';
-import { ChevronLeft, MessageSquare, Loader2 } from 'lucide-react';
+import { MessageSquare, Loader2 } from 'lucide-react';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import { buildApiUrl, connectSocket } from '../runtimeConfig';
@@ -9,6 +9,7 @@ import { buildApiUrl, connectSocket } from '../runtimeConfig';
 interface Node {
   _id: string;
   alias: string;
+  nickname?: string | null;
   fitId: string;
   isOnline: boolean;
 }
@@ -17,7 +18,7 @@ const VaultPage: React.FC = () => {
   const { vaultToken } = useAuth();
   const [nodes, setNodes] = useState<Node[]>([]);
   const [loading, setLoading] = useState(true);
-  const [selectedNode, setSelectedNode] = useState<{ id: string, alias: string } | null>(null);
+  const [selectedNode, setSelectedNode] = useState<{ id: string, alias: string, nickname?: string | null } | null>(null);
   const [view, setView] = useState<'nodes' | 'search'>('nodes');
 
   const fetchNodes = async () => {
@@ -64,15 +65,18 @@ const VaultPage: React.FC = () => {
   if (selectedNode) {
     return (
       <div className="fixed inset-0 bg-vault-bg z-[60] flex flex-col">
-        <div className="absolute top-4 left-4 z-[70]">
-          <button 
-            onClick={() => setSelectedNode(null)}
-            className="w-10 h-10 rounded-full bg-white/5 flex items-center justify-center text-white/40"
-          >
-            <ChevronLeft size={20} />
-          </button>
-        </div>
-        <ChatRoom receiverId={selectedNode.id} receiverAlias={selectedNode.alias} />
+        <ChatRoom
+          receiverId={selectedNode.id}
+          receiverAlias={selectedNode.alias}
+          receiverNickname={selectedNode.nickname}
+          onBack={() => setSelectedNode(null)}
+          onNicknameSaved={(nickname) => {
+            setSelectedNode((prev) => prev ? { ...prev, nickname } : prev);
+            setNodes((prev) => prev.map((node) => (
+              node._id === selectedNode.id ? { ...node, nickname } : node
+            )));
+          }}
+        />
       </div>
     );
   }
@@ -105,22 +109,22 @@ const VaultPage: React.FC = () => {
               {nodes.map(node => (
                 <div 
                   key={node._id} 
-                  onClick={() => setSelectedNode({ id: node._id, alias: node.alias })}
+                  onClick={() => setSelectedNode({ id: node._id, alias: node.alias, nickname: node.nickname })}
                   className="glass p-4 rounded-xl flex items-center justify-between active:scale-[0.98] transition-all cursor-pointer"
                 >
                   <div className="flex items-center gap-3">
                     <div className="relative">
                       <div className="w-10 h-10 rounded-full bg-white/5 flex items-center justify-center text-white/20 font-mono text-xs">
-                        {node.alias.substring(0, 2)}
+                        {(node.nickname || node.alias).substring(0, 2)}
                       </div>
                       {node.isOnline && (
                         <div className="absolute bottom-0 right-0 w-3 h-3 bg-green-500 rounded-full border-2 border-vault-bg shadow-[0_0_8px_rgba(34,197,94,0.4)]" />
                       )}
                     </div>
                     <div>
-                      <div className="font-mono text-sm">{node.alias}</div>
+                      <div className="font-mono text-sm">{node.nickname || node.alias}</div>
                       <div className="text-[10px] text-white/40 uppercase tracking-tighter">
-                        {node.isOnline ? 'Active Link' : 'Standby Mode'}
+                        {node.nickname ? `Alias: ${node.alias}` : (node.isOnline ? 'Active Link' : 'Standby Mode')}
                       </div>
                     </div>
                   </div>
@@ -141,7 +145,7 @@ const VaultPage: React.FC = () => {
           )}
         </div>
       ) : (
-        <SearchNode onSelect={(node) => setSelectedNode({ id: node._id, alias: node.alias })} />
+        <SearchNode onSelect={(node) => setSelectedNode({ id: node._id, alias: node.alias, nickname: null })} />
       )}
     </div>
   );

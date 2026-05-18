@@ -22,6 +22,8 @@ const userSchema = new mongoose.Schema({
   isOnline: { type: Boolean, default: false },
   lastSeen: { type: Date, default: Date.now },
   activeSessions: [sessionSchema],
+  vaultContacts: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+  vaultNicknames: { type: Map, of: String },
 
   // Fitness Data (Mask)
   fitnessStats: {

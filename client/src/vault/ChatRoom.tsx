@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Socket } from 'socket.io-client';
 import { useAuth } from '../context/AuthContext';
-import { Send, Loader2, User, Check, CheckCheck, CornerUpLeft, X } from 'lucide-react';
+import { Send, Loader2, User, Check, CheckCheck, CornerUpLeft, X, Trash2, ChevronLeft, Pencil } from 'lucide-react';
 import axios from 'axios';
 import { motion, AnimatePresence } from 'framer-motion';
 import { buildApiUrl, connectSocket } from '../runtimeConfig';
@@ -21,7 +21,13 @@ interface Message {
   reactions: Array<{ userId: string; emoji: string }>;
 }
 
-const ChatRoom: React.FC<{ receiverId: string, receiverAlias: string }> = ({ receiverId, receiverAlias }) => {
+const ChatRoom: React.FC<{
+  receiverId: string,
+  receiverAlias: string,
+  receiverNickname?: string | null,
+  onBack: () => void,
+  onNicknameSaved?: (nickname: string | null) => void
+}> = ({ receiverId, receiverAlias, receiverNickname, onBack, onNicknameSaved }) => {
   const { vaultToken, user, clearUnread } = useAuth();
   const [messages, setMessages] = useState<Message[]>([]);
   const [newMessage, setNewMessage] = useState('');
@@ -30,6 +36,9 @@ const ChatRoom: React.FC<{ receiverId: string, receiverAlias: string }> = ({ rec
   const [isPeerOnline, setIsPeerOnline] = useState(false);
   const [replyingTo, setReplyTo] = useState<Message | null>(null);
   const [showReactions, setShowReactions] = useState<string | null>(null);
+  const [isClearingChat, setIsClearingChat] = useState(false);
+  const [nickname, setNickname] = useState(receiverNickname || '');
+  const [isSavingNickname, setIsSavingNickname] = useState(false);
 
   const socketRef = useRef<Socket | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -96,6 +105,10 @@ const ChatRoom: React.FC<{ receiverId: string, receiverAlias: string }> = ({ rec
     scrollRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, isPeerTyping]);
 
+  useEffect(() => {
+    setNickname(receiverNickname || '');
+  }, [receiverNickname, receiverId]);
+
   const handleTyping = (e: React.ChangeEvent<HTMLInputElement>) => {
     setNewMessage(e.target.value);
     if (socketRef.current) {
@@ -136,24 +149,102 @@ const ChatRoom: React.FC<{ receiverId: string, receiverAlias: string }> = ({ rec
     setShowReactions(null);
   };
 
+  const handleClearChat = async () => {
+    const confirmed = window.confirm(`Clear all messages with ${nickname || receiverAlias}? This keeps the DM contact but permanently deletes the chat history.`);
+    if (!confirmed) return;
+
+    setIsClearingChat(true);
+
+    try {
+      await axios.delete(buildApiUrl(`/api/sync-center/history/${receiverId}`), {
+        headers: { 'x-vault-token': vaultToken }
+      });
+      setMessages([]);
+      setReplyTo(null);
+      setShowReactions(null);
+    } catch (err) {
+      console.error('Clear Chat Error:', err);
+      window.alert('Failed to clear chat history. Please try again.');
+    } finally {
+      setIsClearingChat(false);
+    }
+  };
+
+  const handleNicknameEdit = async () => {
+    const nextNickname = window.prompt('Set a nickname for this chat. Leave it empty to remove the custom name.', nickname || receiverAlias);
+    if (nextNickname === null) return;
+
+    setIsSavingNickname(true);
+
+    try {
+      const res = await axios.patch(
+        buildApiUrl(`/api/sync-center/contacts/${receiverId}/nickname`),
+        { nickname: nextNickname },
+        { headers: { 'x-vault-token': vaultToken } }
+      );
+      const savedNickname = res.data.nickname || '';
+      setNickname(savedNickname);
+      onNicknameSaved?.(savedNickname || null);
+    } catch (err) {
+      console.error('Nickname Update Error:', err);
+      window.alert('Failed to save nickname. Please try again.');
+    } finally {
+      setIsSavingNickname(false);
+    }
+  };
+
   if (loading) return <div className="h-full flex items-center justify-center"><Loader2 className="animate-spin text-white/20" /></div>;
+
+  const displayName = nickname || receiverAlias;
 
   return (
     <div className="flex flex-col h-full bg-vault-bg text-white font-sans overflow-hidden">
       {/* Header */}
       <div className="p-4 border-b border-white/5 flex items-center gap-3 bg-black/20 backdrop-blur-md">
+        <button
+          type="button"
+          onClick={onBack}
+          className="flex h-10 w-10 items-center justify-center rounded-full bg-white/5 text-white/40 transition-colors hover:text-white"
+          aria-label="Back to chats"
+        >
+          <ChevronLeft size={20} />
+        </button>
         <div className="relative">
           <div className="w-10 h-10 rounded-full bg-white/5 flex items-center justify-center">
             <User size={20} className="text-white/40" />
           </div>
           <div className={`absolute bottom-0 right-0 w-3 h-3 rounded-full border-2 border-vault-bg ${isPeerOnline ? 'bg-green-500' : 'bg-white/20'}`} />
         </div>
-        <div>
-          <div className="font-mono text-sm">{receiverAlias}</div>
+        <div className="min-w-0">
+          <div className="truncate font-mono text-sm">{displayName}</div>
           <div className="text-[10px] uppercase tracking-tighter">
-            {isPeerTyping ? <span className="text-fitness-primary animate-pulse">Typing...</span> : <span className={isPeerOnline ? 'text-green-500' : 'text-white/20'}>{isPeerOnline ? 'Online' : 'Offline'}</span>}
+            {isPeerTyping ? (
+              <span className="text-fitness-primary animate-pulse">Typing...</span>
+            ) : nickname ? (
+              <span className="truncate text-white/30">Alias: {receiverAlias}</span>
+            ) : (
+              <span className={isPeerOnline ? 'text-green-500' : 'text-white/20'}>{isPeerOnline ? 'Online' : 'Offline'}</span>
+            )}
           </div>
         </div>
+        <button
+          type="button"
+          onClick={handleNicknameEdit}
+          disabled={isSavingNickname}
+          className="ml-auto flex h-10 w-10 items-center justify-center rounded-full border border-white/10 bg-white/5 text-white/40 transition-colors hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+          aria-label="Edit chat nickname"
+        >
+          {isSavingNickname ? <Loader2 size={16} className="animate-spin" /> : <Pencil size={16} />}
+        </button>
+        <button
+          type="button"
+          onClick={handleClearChat}
+          disabled={isClearingChat}
+          className="flex h-10 w-10 items-center justify-center rounded-full border border-white/10 bg-white/5 text-white/40 transition-colors hover:text-red-400 disabled:cursor-not-allowed disabled:opacity-40"
+          aria-label="Clear chat history"
+        >
+          {isClearingChat ? <Loader2 size={16} className="animate-spin" /> : <Trash2 size={16} />}
+        </button>
       </div>
 
       {/* Messages */}
@@ -261,6 +352,11 @@ const ChatRoom: React.FC<{ receiverId: string, receiverAlias: string }> = ({ rec
               <span className="w-1 h-1 bg-white/40 rounded-full animate-bounce [animation-delay:0.2s]" />
               <span className="w-1 h-1 bg-white/40 rounded-full animate-bounce [animation-delay:0.4s]" />
             </div>
+          </div>
+        )}
+        {!messages.length && !isPeerTyping && (
+          <div className="py-12 text-center text-xs uppercase tracking-[0.2em] text-white/20">
+            No messages in this channel
           </div>
         )}
         <div ref={scrollRef} className="h-4" />
