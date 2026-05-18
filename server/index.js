@@ -16,16 +16,22 @@ require('dotenv').config({ path: resolvedEnvPath });
 const app = express();
 const server = http.createServer(app);
 const clientDistPath = path.resolve(__dirname, '../client/dist');
-const allowedOrigins = [
-  'http://localhost:5173',
-  'http://localhost:5174',
-  ...[process.env.CLIENT_URL, process.env.CLIENT_ORIGIN, process.env.CORS_ORIGIN]
-    .filter(Boolean)
-    .flatMap((value) => value.split(','))
-    .map((origin) => origin.trim())
-].filter(Boolean);
-const hasConfiguredOrigins = allowedOrigins.length > 0;
-const isAllowedOrigin = (origin) => !origin || !hasConfiguredOrigins || allowedOrigins.includes(origin);
+const devOrigins = ['http://localhost:5173', 'http://localhost:5174'];
+const configuredOrigins = [process.env.CLIENT_URL, process.env.CLIENT_ORIGIN, process.env.CORS_ORIGIN]
+  .filter(Boolean)
+  .flatMap((value) => value.split(','))
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+const inferredOrigins = [process.env.RENDER_EXTERNAL_URL, process.env.RENDER_PUBLIC_URL]
+  .filter(Boolean)
+  .map((origin) => origin.trim());
+const explicitOrigins = [...new Set([...configuredOrigins, ...inferredOrigins])];
+const allowedOrigins = [...new Set([
+  ...(process.env.NODE_ENV === 'production' ? [] : devOrigins),
+  ...explicitOrigins
+])];
+const hasExplicitOrigins = explicitOrigins.length > 0;
+const isAllowedOrigin = (origin) => !origin || !hasExplicitOrigins || allowedOrigins.includes(origin);
 
 const io = new Server(server, {
   cors: {
