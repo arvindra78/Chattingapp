@@ -2,6 +2,7 @@ import { useState, useEffect, forwardRef, useImperativeHandle } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useMediaStream } from '../hooks/useMediaStream';
 import { useWebRTC } from '../hooks/useWebRTC';
+import { useCallSounds } from '../hooks/useCallSounds';
 import VideoCallInterface from '../components/video/VideoCallInterface';
 import VideoCallModal from '../components/video/VideoCallModal';
 import { AnimatePresence } from 'framer-motion';
@@ -22,6 +23,9 @@ const VideoCallManager = forwardRef<VideoCallManagerHandle, { socket: any }>((pr
     rejectCall, 
     endCall
   } = useWebRTC(props.socket, user?.id);
+
+  // Initialize call sounds
+  useCallSounds(callState);
 
   const [receiverAlias, setReceiverAlias] = useState('');
   const [isMicEnabled, setIsMicEnabled] = useState(true);
