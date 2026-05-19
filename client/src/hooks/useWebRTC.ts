@@ -18,9 +18,15 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
   const peerConnection = useRef<RTCPeerConnection | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
   const targetUserId = useRef<string | null>(null);
+  const candidateQueue = useRef<RTCIceCandidateInit[]>([]);
 
   const cleanup = useCallback(() => {
+    console.log('[WebRTC] Cleaning up call resources');
     if (peerConnection.current) {
+      peerConnection.current.onicecandidate = null;
+      peerConnection.current.ontrack = null;
+      peerConnection.current.onconnectionstatechange = null;
+      peerConnection.current.oniceconnectionstatechange = null;
       peerConnection.current.close();
       peerConnection.current = null;
     }
@@ -28,17 +34,50 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
     setCallState('idle');
     setCallerId(null);
     targetUserId.current = null;
+    candidateQueue.current = [];
+  }, []);
+
+  const processCandidateQueue = useCallback(async () => {
+    if (!peerConnection.current || !peerConnection.current.remoteDescription) return;
+    
+    console.log(`[WebRTC] Processing ${candidateQueue.current.length} queued candidates`);
+    while (candidateQueue.current.length > 0) {
+      const candidate = candidateQueue.current.shift();
+      if (candidate) {
+        try {
+          await peerConnection.current.addIceCandidate(new RTCIceCandidate(candidate));
+        } catch (e) {
+          console.error('[WebRTC] Error adding queued candidate', e);
+        }
+      }
+    }
   }, []);
 
   const createPeerConnection = useCallback((receiverId: string, stream: MediaStream) => {
+    console.log('[WebRTC] Creating RTCPeerConnection');
     const pc = new RTCPeerConnection(ICE_SERVERS);
     
     stream.getTracks().forEach(track => {
+      console.log(`[WebRTC] Adding local track: ${track.kind}`);
       pc.addTrack(track, stream);
     });
 
     pc.ontrack = (event) => {
-      setRemoteStream(event.streams[0]);
+      console.log(`[WebRTC] Received remote track: ${event.track.kind}`);
+      if (event.streams && event.streams[0]) {
+        setRemoteStream(event.streams[0]);
+      } else {
+        // Fallback for browsers that don't provide streams in the event
+        setRemoteStream(prev => {
+          if (prev) {
+            prev.addTrack(event.track);
+            return prev;
+          }
+          const newStream = new MediaStream();
+          newStream.addTrack(event.track);
+          return newStream;
+        });
+      }
     };
 
     pc.onicecandidate = (event) => {
@@ -50,13 +89,20 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
       }
     };
 
-    pc.onconnectionstatechange = () => {
-      if (pc.connectionState === 'connected') setCallState('connected');
-      if (pc.connectionState === 'failed') setCallState('failed');
-      if (pc.connectionState === 'disconnected' || pc.connectionState === 'closed') {
-        cleanup();
+    const handleStateChange = () => {
+      const state = pc.connectionState || pc.iceConnectionState;
+      console.log(`[WebRTC] Connection state: ${state}`);
+      
+      if (state === 'connected') setCallState('connected');
+      if (state === 'failed') {
+        setCallState('failed');
+        setTimeout(cleanup, 3000);
       }
+      if (state === 'closed') cleanup();
     };
+
+    pc.onconnectionstatechange = handleStateChange;
+    pc.oniceconnectionstatechange = handleStateChange;
 
     peerConnection.current = pc;
     return pc;
@@ -65,6 +111,7 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
   // Actions
   const initiateCall = useCallback(async (receiverId: string, stream: MediaStream) => {
     if (!socket) return;
+    console.log(`[WebRTC] Initiating call to ${receiverId}`);
     localStreamRef.current = stream;
     targetUserId.current = receiverId;
     setCallState('calling');
@@ -78,6 +125,7 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
 
   const acceptCall = useCallback(async (callerId: string, offer: RTCSessionDescriptionInit, stream: MediaStream) => {
     if (!socket) return;
+    console.log(`[WebRTC] Accepting call from ${callerId}`);
     localStreamRef.current = stream;
     targetUserId.current = callerId;
 
@@ -87,17 +135,21 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
     await pc.setLocalDescription(answer);
 
     socket.emit('answer-call', { callerId, answer });
-    setCallState('connected');
-  }, [socket, createPeerConnection]);
+    
+    // Process any candidates that arrived while we were setting up
+    await processCandidateQueue();
+  }, [socket, createPeerConnection, processCandidateQueue]);
 
   const rejectCall = useCallback((callerId: string) => {
     if (!socket) return;
+    console.log(`[WebRTC] Rejecting call from ${callerId}`);
     socket.emit('reject-call', { callerId });
     cleanup();
   }, [socket, cleanup]);
 
   const endCall = useCallback(() => {
     if (socket && targetUserId.current) {
+      console.log(`[WebRTC] Ending call with ${targetUserId.current}`);
       socket.emit('end-call', { receiverId: targetUserId.current });
     }
     cleanup();
@@ -108,43 +160,44 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
     if (!socket) return;
 
     socket.on('incoming-call', ({ callerId, callerAlias, offer }) => {
+      console.log(`[WebRTC] Incoming call event from ${callerAlias}`);
       setCallerId({ id: callerId, alias: callerAlias, offer });
       setCallState('ringing');
     });
 
     socket.on('call-answered', async ({ answer }) => {
-      if (peerConnection.current) {
-        await peerConnection.current.setRemoteDescription(new RTCSessionDescription(answer));
-        setCallState('connected');
-      }
-    });
-
-    socket.on('call-rejected', () => {
-      setCallState('rejected');
-      setTimeout(cleanup, 2000);
-    });
-
-    socket.on('webrtc-offer', async (_data) => {
-      // In case of mid-call re-negotiation (advanced)
-    });
-
-    socket.on('webrtc-answer', async ({ answer }) => {
-      if (peerConnection.current) {
-        await peerConnection.current.setRemoteDescription(new RTCSessionDescription(answer));
-      }
-    });
-
-    socket.on('ice-candidate', async ({ candidate }) => {
+      console.log('[WebRTC] Call answered event received');
       if (peerConnection.current) {
         try {
-          await peerConnection.current.addIceCandidate(new RTCIceCandidate(candidate));
+          await peerConnection.current.setRemoteDescription(new RTCSessionDescription(answer));
+          await processCandidateQueue();
         } catch (e) {
-          console.error('Error adding ice candidate', e);
+          console.error('[WebRTC] Error setting remote description from answer', e);
         }
       }
     });
 
+    socket.on('call-rejected', () => {
+      console.log('[WebRTC] Call rejected by peer');
+      setCallState('rejected');
+      setTimeout(cleanup, 2000);
+    });
+
+    socket.on('ice-candidate', async ({ candidate }) => {
+      if (peerConnection.current && peerConnection.current.remoteDescription) {
+        try {
+          await peerConnection.current.addIceCandidate(new RTCIceCandidate(candidate));
+        } catch (e) {
+          console.error('[WebRTC] Error adding ice candidate', e);
+        }
+      } else {
+        console.log('[WebRTC] Queuing incoming ICE candidate');
+        candidateQueue.current.push(candidate);
+      }
+    });
+
     socket.on('call-ended', () => {
+      console.log('[WebRTC] Call ended by peer');
       setCallState('ended');
       setTimeout(cleanup, 2000);
     });
@@ -153,12 +206,10 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
       socket.off('incoming-call');
       socket.off('call-answered');
       socket.off('call-rejected');
-      socket.off('webrtc-offer');
-      socket.off('webrtc-answer');
       socket.off('ice-candidate');
       socket.off('call-ended');
     };
-  }, [socket, cleanup]);
+  }, [socket, cleanup, processCandidateQueue]);
 
   return {
     callState,
