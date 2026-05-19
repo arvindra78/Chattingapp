@@ -1,50 +1,73 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef } from 'react';
 
 export const useMediaStream = () => {
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [cameraDenied, setCameraDenied] = useState(false);
+  const [microphoneDenied, setMicrophoneDenied] = useState(false);
+  const localStreamRef = useRef<MediaStream | null>(null);
+
+  const setTrackedStream = useCallback((stream: MediaStream | null) => {
+    localStreamRef.current = stream;
+    setLocalStream(stream);
+  }, []);
 
   const startStream = useCallback(async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
+      setError(null);
+      setCameraDenied(false);
+      setMicrophoneDenied(false);
+
+      const constraints = {
         video: {
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
+          width: { ideal: 640 },
+          height: { ideal: 360 },
+          frameRate: { ideal: 24, max: 30 },
           facingMode: 'user'
         },
-        audio: true
-      });
-      setLocalStream(stream);
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        }
+      };
+      
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      setTrackedStream(stream);
       return stream;
     } catch (err: any) {
       console.error('Error accessing media devices:', err);
-      setError(err.message || 'Could not access camera/microphone');
+      const message = err.message || 'Could not access camera/microphone';
+      const isPermissionDenied = err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError';
+      setCameraDenied(isPermissionDenied || err.name === 'NotFoundError');
+      setMicrophoneDenied(isPermissionDenied || err.name === 'NotFoundError');
+      setError(message);
       return null;
+    }
+  }, [setTrackedStream]);
+
+  const stopStream = useCallback(() => {
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach(track => track.stop());
+      setTrackedStream(null);
+    }
+  }, [setTrackedStream]);
+
+  const toggleVideo = useCallback((enabled: boolean) => {
+    if (localStreamRef.current) {
+      localStreamRef.current.getVideoTracks().forEach(track => {
+        track.enabled = enabled;
+      });
     }
   }, []);
 
-  const stopStream = useCallback(() => {
-    if (localStream) {
-      localStream.getTracks().forEach(track => track.stop());
-      setLocalStream(null);
-    }
-  }, [localStream]);
-
-  const toggleVideo = useCallback((enabled: boolean) => {
-    if (localStream) {
-      localStream.getVideoTracks().forEach(track => {
-        track.enabled = enabled;
-      });
-    }
-  }, [localStream]);
-
   const toggleAudio = useCallback((enabled: boolean) => {
-    if (localStream) {
-      localStream.getAudioTracks().forEach(track => {
+    if (localStreamRef.current) {
+      localStreamRef.current.getAudioTracks().forEach(track => {
         track.enabled = enabled;
       });
     }
-  }, [localStream]);
+  }, []);
 
   return {
     localStream,
@@ -52,6 +75,8 @@ export const useMediaStream = () => {
     stopStream,
     toggleVideo,
     toggleAudio,
-    error
+    error,
+    cameraDenied,
+    microphoneDenied
   };
 };

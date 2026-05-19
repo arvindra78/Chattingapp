@@ -1,45 +1,58 @@
 import { useEffect, useRef, useCallback } from 'react';
 import type { CallState } from './useWebRTC';
 
-const OUTGOING_RING_URL = 'https://assets.mixkit.co/sfx/preview/mixkit-waiting-ring-tone-1354.mp3';
-const INCOMING_RING_URL = 'https://assets.mixkit.co/sfx/preview/mixkit-outgoing-call-signal-alert-2198.mp3';
-
 export const useCallSounds = (callState: CallState) => {
-  const outgoingAudio = useRef<HTMLAudioElement | null>(null);
-  const incomingAudio = useRef<HTMLAudioElement | null>(null);
+  const audioContext = useRef<AudioContext | null>(null);
+  const intervalRef = useRef<number | null>(null);
 
   const stopAll = useCallback(() => {
-    if (outgoingAudio.current) {
-      outgoingAudio.current.pause();
-      outgoingAudio.current.currentTime = 0;
-    }
-    if (incomingAudio.current) {
-      incomingAudio.current.pause();
-      incomingAudio.current.currentTime = 0;
+    if (intervalRef.current) {
+      window.clearInterval(intervalRef.current);
+      intervalRef.current = null;
     }
   }, []);
 
-  useEffect(() => {
-    // Initialize audio objects
-    if (!outgoingAudio.current) {
-      outgoingAudio.current = new Audio(OUTGOING_RING_URL);
-      outgoingAudio.current.loop = true;
-    }
-    if (!incomingAudio.current) {
-      incomingAudio.current = new Audio(INCOMING_RING_URL);
-      incomingAudio.current.loop = true;
-    }
+  const playTone = useCallback((frequency: number, durationMs: number) => {
+    try {
+      const AudioContextCtor = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioContextCtor) return;
 
-    // Play/Stop based on state
+      if (!audioContext.current) {
+        audioContext.current = new AudioContextCtor();
+      }
+
+      const context = audioContext.current;
+      const oscillator = context.createOscillator();
+      const gain = context.createGain();
+
+      oscillator.type = 'sine';
+      oscillator.frequency.value = frequency;
+      gain.gain.value = 0.025;
+
+      oscillator.connect(gain);
+      gain.connect(context.destination);
+      oscillator.start();
+      oscillator.stop(context.currentTime + durationMs / 1000);
+    } catch (err) {
+      console.warn('[CallSounds] Tone playback unavailable:', err);
+    }
+  }, []);
+
+  const startToneLoop = useCallback((frequency: number, intervalMs: number) => {
+    stopAll();
+    playTone(frequency, 180);
+    intervalRef.current = window.setInterval(() => playTone(frequency, 180), intervalMs);
+  }, [playTone, stopAll]);
+
+  useEffect(() => {
     switch (callState) {
       case 'calling':
-        stopAll();
-        outgoingAudio.current.play().catch(e => console.warn('[CallSounds] Outgoing playback blocked:', e));
+        startToneLoop(440, 1600);
         break;
       case 'ringing':
-        stopAll();
-        incomingAudio.current.play().catch(e => console.warn('[CallSounds] Incoming playback blocked:', e));
+        startToneLoop(660, 1100);
         break;
+      case 'connecting':
       case 'connected':
       case 'ended':
       case 'rejected':
@@ -54,7 +67,7 @@ export const useCallSounds = (callState: CallState) => {
     return () => {
       stopAll();
     };
-  }, [callState, stopAll]);
+  }, [callState, startToneLoop, stopAll]);
 
   return { stopAll };
 };

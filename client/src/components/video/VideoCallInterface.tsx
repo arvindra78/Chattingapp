@@ -12,6 +12,10 @@ interface VideoCallInterfaceProps {
   receiverAlias: string;
   isMicEnabled: boolean;
   isVideoEnabled: boolean;
+  mediaError?: string | null;
+  cameraDenied?: boolean;
+  microphoneDenied?: boolean;
+  onRetryMedia?: () => void;
 }
 
 const VideoCallInterface: React.FC<VideoCallInterfaceProps> = ({
@@ -23,7 +27,11 @@ const VideoCallInterface: React.FC<VideoCallInterfaceProps> = ({
   onToggleVideo,
   receiverAlias,
   isMicEnabled,
-  isVideoEnabled
+  isVideoEnabled,
+  mediaError,
+  cameraDenied,
+  microphoneDenied,
+  onRetryMedia
 }) => {
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
@@ -49,6 +57,7 @@ const VideoCallInterface: React.FC<VideoCallInterfaceProps> = ({
             ref={remoteVideoRef}
             autoPlay
             playsInline
+            controls={false}
             className="w-full h-full object-cover"
           />
         ) : (
@@ -57,7 +66,7 @@ const VideoCallInterface: React.FC<VideoCallInterfaceProps> = ({
               <User size={48} className="text-white/20" />
             </div>
             <div className="text-white/40 font-mono text-sm uppercase tracking-widest">
-              {callState === 'calling' ? 'Transmitting...' : 'Encrypted Link'}
+              {callState === 'calling' ? 'Transmitting...' : callState === 'connecting' ? 'Linking Media...' : 'Encrypted Link'}
             </div>
           </div>
         )}
@@ -72,7 +81,7 @@ const VideoCallInterface: React.FC<VideoCallInterfaceProps> = ({
           <div>
             <div className="text-white font-mono text-sm uppercase tracking-wider">{receiverAlias}</div>
             <div className="text-[10px] text-fitness-primary uppercase tracking-[0.2em] font-bold">
-              {callState === 'connected' ? 'Secure Stream Active' : 'Establishing Link...'}
+              {callState === 'connected' ? 'Secure Stream Active' : callState === 'connecting' ? 'Negotiating Media...' : 'Establishing Link...'}
             </div>
           </div>
         </div>
@@ -90,6 +99,7 @@ const VideoCallInterface: React.FC<VideoCallInterfaceProps> = ({
             autoPlay
             playsInline
             muted
+            controls={false}
             className="w-full h-full object-cover mirror"
           />
         ) : (
@@ -127,8 +137,40 @@ const VideoCallInterface: React.FC<VideoCallInterfaceProps> = ({
         </button>
       </div>
 
+      {/* Media Permission Overlay */}
+      {mediaError && (
+        <div className="absolute inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-6 text-center">
+          <div className="max-w-xs space-y-4">
+            <div className="text-fitness-primary text-lg font-mono uppercase tracking-widest">Media Blocked</div>
+            <p className="text-white/60 text-sm">
+              {cameraDenied && microphoneDenied
+                ? 'Camera and microphone access are required for video calls.'
+                : cameraDenied
+                  ? 'Camera access is required for video calls.'
+                  : microphoneDenied
+                    ? 'Microphone access is required for two-way audio.'
+                    : mediaError}
+            </p>
+            <div className="grid grid-cols-1 gap-3">
+              <button
+                onClick={onRetryMedia}
+                className="w-full py-4 rounded-2xl bg-fitness-primary text-black font-bold uppercase tracking-[0.2em] text-xs"
+              >
+                Retry Permissions
+              </button>
+              <button
+                onClick={onEndCall}
+                className="w-full py-4 rounded-2xl bg-white/10 text-white font-bold uppercase tracking-[0.2em] text-xs border border-white/10"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Connection Failure Overlay */}
-      {callState === 'failed' && (
+      {callState === 'failed' && !mediaError && (
         <div className="absolute inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-6 text-center">
           <div className="max-w-xs space-y-4">
             <div className="text-red-500 text-lg font-mono uppercase tracking-widest">Link Failure</div>

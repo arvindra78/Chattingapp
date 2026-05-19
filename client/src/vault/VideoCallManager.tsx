@@ -1,4 +1,4 @@
-import { useState, useEffect, forwardRef, useImperativeHandle } from 'react';
+import { useState, useEffect, forwardRef, useImperativeHandle, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useMediaStream } from '../hooks/useMediaStream';
 import { useWebRTC } from '../hooks/useWebRTC';
@@ -13,7 +13,7 @@ export interface VideoCallManagerHandle {
 
 const VideoCallManager = forwardRef<VideoCallManagerHandle, { socket: any }>((props, ref) => {
   const { user } = useAuth();
-  const { localStream, startStream, stopStream, toggleAudio, toggleVideo } = useMediaStream();
+  const { localStream, startStream, stopStream, toggleAudio, toggleVideo, error: mediaError, cameraDenied, microphoneDenied } = useMediaStream();
   const { 
     callState, 
     callerInfo, 
@@ -30,24 +30,47 @@ const VideoCallManager = forwardRef<VideoCallManagerHandle, { socket: any }>((pr
   const [receiverAlias, setReceiverAlias] = useState('');
   const [isMicEnabled, setIsMicEnabled] = useState(true);
   const [isVideoEnabled, setIsVideoEnabled] = useState(true);
+  const [pendingMediaRetry, setPendingMediaRetry] = useState(false);
+  const pendingCallRef = useRef<
+    | { type: 'outgoing'; receiverId: string; alias: string }
+    | { type: 'incoming'; callerId: string; alias: string; offer: RTCSessionDescriptionInit }
+    | null
+  >(null);
+
+  const startMediaForPendingCall = async () => {
+    const pendingCall = pendingCallRef.current;
+    if (!pendingCall) return;
+
+    const stream = await startStream();
+    if (!stream) {
+      setPendingMediaRetry(true);
+      return;
+    }
+
+    setPendingMediaRetry(false);
+    setIsMicEnabled(true);
+    setIsVideoEnabled(true);
+
+    if (pendingCall.type === 'outgoing') {
+      await initiateCall(pendingCall.receiverId, stream);
+    } else {
+      await acceptCall(pendingCall.callerId, pendingCall.offer, stream);
+    }
+  };
 
   useImperativeHandle(ref, () => ({
     startCall: async (receiverId: string, alias: string) => {
       setReceiverAlias(alias);
-      const stream = await startStream();
-      if (stream) {
-        await initiateCall(receiverId, stream);
-      }
+      pendingCallRef.current = { type: 'outgoing', receiverId, alias };
+      await startMediaForPendingCall();
     }
   }));
 
   const handleAccept = async () => {
     if (callerInfo && callerInfo.offer) {
       setReceiverAlias(callerInfo.alias);
-      const stream = await startStream();
-      if (stream) {
-        await acceptCall(callerInfo.id, callerInfo.offer, stream);
-      }
+      pendingCallRef.current = { type: 'incoming', callerId: callerInfo.id, alias: callerInfo.alias, offer: callerInfo.offer };
+      await startMediaForPendingCall();
     }
   };
 
@@ -60,6 +83,8 @@ const VideoCallManager = forwardRef<VideoCallManagerHandle, { socket: any }>((pr
   const handleEnd = () => {
     endCall();
     stopStream();
+    pendingCallRef.current = null;
+    setPendingMediaRetry(false);
   };
 
   const handleToggleMic = (enabled: boolean) => {
@@ -76,6 +101,9 @@ const VideoCallManager = forwardRef<VideoCallManagerHandle, { socket: any }>((pr
   useEffect(() => {
     if (callState === 'ended' || callState === 'idle') {
       stopStream();
+      if (callState === 'idle') {
+        pendingCallRef.current = null;
+      }
     }
   }, [callState, stopStream]);
 
@@ -92,7 +120,7 @@ const VideoCallManager = forwardRef<VideoCallManagerHandle, { socket: any }>((pr
       </AnimatePresence>
 
       <AnimatePresence>
-        {(callState === 'calling' || callState === 'connected' || callState === 'failed') && (
+        {(callState === 'calling' || callState === 'connecting' || callState === 'connected' || callState === 'failed' || pendingMediaRetry) && (
           <VideoCallInterface
             localStream={localStream}
             remoteStream={remoteStream}
@@ -103,6 +131,10 @@ const VideoCallManager = forwardRef<VideoCallManagerHandle, { socket: any }>((pr
             receiverAlias={receiverAlias}
             isMicEnabled={isMicEnabled}
             isVideoEnabled={isVideoEnabled}
+            mediaError={mediaError}
+            cameraDenied={cameraDenied}
+            microphoneDenied={microphoneDenied}
+            onRetryMedia={startMediaForPendingCall}
           />
         )}
       </AnimatePresence>

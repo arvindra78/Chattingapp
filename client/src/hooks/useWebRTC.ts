@@ -1,14 +1,38 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { Socket } from 'socket.io-client';
 
-const ICE_SERVERS = {
+const parseTurnUrls = (value: string | undefined) =>
+  value?.split(',').map((url) => url.trim()).filter(Boolean) || [];
+
+const TURN_URLS = parseTurnUrls(import.meta.env.VITE_TURN_URLS);
+const TURN_USERNAME = import.meta.env.VITE_TURN_USERNAME?.trim();
+const TURN_CREDENTIAL = import.meta.env.VITE_TURN_CREDENTIAL?.trim();
+const ICE_TRANSPORT_POLICY = import.meta.env.VITE_ICE_TRANSPORT_POLICY === 'relay' ? 'relay' : 'all';
+
+const RTC_CONFIG: RTCConfiguration = {
   iceServers: [
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' },
+    {
+      urls: [
+        'stun:stun.l.google.com:19302',
+        'stun:stun1.l.google.com:19302'
+      ]
+    },
+    ...(TURN_URLS.length && TURN_USERNAME && TURN_CREDENTIAL
+      ? [{
+          urls: TURN_URLS,
+          username: TURN_USERNAME,
+          credential: TURN_CREDENTIAL
+        }]
+      : [])
   ],
+  iceCandidatePoolSize: 10,
+  iceTransportPolicy: ICE_TRANSPORT_POLICY
 };
 
-export type CallState = 'idle' | 'calling' | 'ringing' | 'connected' | 'ended' | 'rejected' | 'failed';
+const VIDEO_MAX_BITRATE = 500_000;
+const VIDEO_MAX_FRAMERATE = 24;
+
+export type CallState = 'idle' | 'calling' | 'ringing' | 'connecting' | 'connected' | 'ended' | 'rejected' | 'failed';
 
 export const useWebRTC = (socket: Socket | null, _userId: string | undefined) => {
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
@@ -19,6 +43,33 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
   const localStreamRef = useRef<MediaStream | null>(null);
   const targetUserId = useRef<string | null>(null);
   const candidateQueue = useRef<RTCIceCandidateInit[]>([]);
+  const remoteStreamRef = useRef<MediaStream | null>(null);
+  const callStateRef = useRef<CallState>('idle');
+
+  useEffect(() => {
+    callStateRef.current = callState;
+  }, [callState]);
+
+  const logSelectedCandidatePair = useCallback(async (pc: RTCPeerConnection) => {
+    try {
+      const stats = await pc.getStats();
+      stats.forEach((report) => {
+        if (report.type === 'candidate-pair' && report.state === 'succeeded' && report.nominated) {
+          const localCandidate = stats.get(report.localCandidateId);
+          const remoteCandidate = stats.get(report.remoteCandidateId);
+          console.log('[WebRTC] Selected candidate pair', {
+            localType: localCandidate?.candidateType,
+            localProtocol: localCandidate?.protocol,
+            remoteType: remoteCandidate?.candidateType,
+            remoteProtocol: remoteCandidate?.protocol,
+            usingTurnRelay: localCandidate?.candidateType === 'relay' || remoteCandidate?.candidateType === 'relay'
+          });
+        }
+      });
+    } catch (err) {
+      console.warn('[WebRTC] Failed to inspect selected candidate pair:', err);
+    }
+  }, []);
 
   const cleanup = useCallback(() => {
     console.log('[WebRTC] Initiating full cleanup');
@@ -32,6 +83,7 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
       peerConnection.current = null;
     }
     setRemoteStream(null);
+    remoteStreamRef.current = null;
     setCallState('idle');
     setCallerId(null);
     targetUserId.current = null;
@@ -59,42 +111,88 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
     }
   }, []);
 
+  const applyVideoSenderParameters = useCallback(async (pc: RTCPeerConnection) => {
+    const videoSender = pc.getSenders().find(sender => sender.track?.kind === 'video');
+    if (!videoSender) return;
+
+    try {
+      const params = videoSender.getParameters();
+      params.encodings = [{
+        ...(params.encodings?.[0] || {}),
+        maxBitrate: VIDEO_MAX_BITRATE,
+        maxFramerate: VIDEO_MAX_FRAMERATE
+      }];
+      await videoSender.setParameters(params);
+      console.log('[WebRTC] Applied video sender parameters', params.encodings[0]);
+    } catch (err) {
+      console.warn('[WebRTC] Could not apply video sender parameters:', err);
+    }
+  }, []);
+
   const createPeerConnection = useCallback((remotePeerId: string, stream: MediaStream) => {
     console.log(`[WebRTC] Creating RTCPeerConnection for peer: ${remotePeerId}`);
-    const pc = new RTCPeerConnection(ICE_SERVERS);
+    console.log('[WebRTC] ICE config', {
+      hasTurn: TURN_URLS.length > 0,
+      iceTransportPolicy: RTC_CONFIG.iceTransportPolicy,
+      iceCandidatePoolSize: RTC_CONFIG.iceCandidatePoolSize
+    });
+    const pc = new RTCPeerConnection(RTC_CONFIG);
     
     stream.getTracks().forEach(track => {
-      console.log(`[WebRTC] Adding local track to PC: ${track.kind}`);
+      console.log(`[WebRTC] Adding local track to PC: ${track.kind}, enabled=${track.enabled}, readyState=${track.readyState}`);
       pc.addTrack(track, stream);
     });
+    void applyVideoSenderParameters(pc);
 
     pc.ontrack = (event) => {
-      console.log(`[WebRTC] Remote track received: ${event.track.kind}`);
-      // Force a new MediaStream instance to trigger React re-render
-      const streamToUse = event.streams[0] || new MediaStream();
-      if (!event.streams[0]) {
-        streamToUse.addTrack(event.track);
+      console.log(`[WebRTC] Remote track received: ${event.track.kind}, streams=${event.streams.length}, muted=${event.track.muted}`);
+      if (!remoteStreamRef.current) {
+        remoteStreamRef.current = new MediaStream();
       }
-      console.log(`[WebRTC] Updating remote stream with ${streamToUse.getTracks().length} tracks`);
-      setRemoteStream(new MediaStream(streamToUse.getTracks()));
+
+      const inboundStream = event.streams[0];
+      const nextTracks = inboundStream?.getTracks() || [event.track];
+      nextTracks.forEach((track) => {
+        const alreadyAdded = remoteStreamRef.current?.getTracks().some(existing => existing.id === track.id);
+        if (!alreadyAdded) {
+          remoteStreamRef.current?.addTrack(track);
+        }
+      });
+
+      console.log(`[WebRTC] Updating remote stream with ${remoteStreamRef.current.getTracks().length} tracks`);
+      setRemoteStream(new MediaStream(remoteStreamRef.current.getTracks()));
     };
 
     pc.onicecandidate = (event) => {
       if (event.candidate && socket) {
-        console.log('[WebRTC] Generated local ICE candidate');
+        console.log('[WebRTC] Sending ICE candidate', {
+          type: event.candidate.type,
+          protocol: event.candidate.protocol,
+          address: event.candidate.address,
+          port: event.candidate.port
+        });
         socket.emit('ice-candidate', {
           receiverId: remotePeerId,
           candidate: event.candidate
         });
+      } else if (!event.candidate) {
+        console.log('[WebRTC] ICE candidate gathering complete');
       }
     };
 
     pc.onconnectionstatechange = () => {
       const state = pc.connectionState;
       console.log(`[WebRTC] Connection state change: ${state}`);
-      if (state === 'connected') setCallState('connected');
-      if (state === 'failed') {
-        console.error('[WebRTC] Connection failed. Triggering recovery/cleanup.');
+      if (state === 'connected') {
+        setCallState('connected');
+        void logSelectedCandidatePair(pc);
+      }
+      if (state === 'connecting') setCallState('connecting');
+      if (state === 'disconnected') {
+        console.warn('[WebRTC] Peer connection temporarily disconnected; waiting for ICE recovery');
+      }
+      if (state === 'failed' || state === 'closed') {
+        console.error(`[WebRTC] Connection ${state}. Triggering cleanup.`);
         setCallState('failed');
         setTimeout(cleanup, 3000);
       }
@@ -102,7 +200,13 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
 
     pc.oniceconnectionstatechange = () => {
       console.log(`[WebRTC] ICE connection state change: ${pc.iceConnectionState}`);
-      if (pc.iceConnectionState === 'failed') {
+      if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+        void logSelectedCandidatePair(pc);
+      }
+      if (pc.iceConnectionState === 'disconnected') {
+        console.warn('[WebRTC] ICE temporarily disconnected; keeping call alive for mobile network recovery');
+      }
+      if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'closed') {
         setCallState('failed');
         setTimeout(cleanup, 3000);
       }
@@ -114,7 +218,7 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
 
     peerConnection.current = pc;
     return pc;
-  }, [socket, cleanup]);
+  }, [socket, cleanup, applyVideoSenderParameters, logSelectedCandidatePair]);
 
   // Actions
   const initiateCall = useCallback(async (receiverId: string, stream: MediaStream) => {
@@ -142,8 +246,7 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
     localStreamRef.current = stream;
     targetUserId.current = callerId;
     
-    // Switch to connected (or connecting) immediately to mount the video UI
-    setCallState('connected');
+    setCallState('connecting');
 
     try {
       const pc = createPeerConnection(callerId, stream);
@@ -180,16 +283,17 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
   useEffect(() => {
     if (!socket) return;
 
-    socket.on('incoming-call', ({ callerId, callerAlias, offer }) => {
+    const handleIncomingCall = ({ callerId, callerAlias, offer }: { callerId: string; callerAlias: string; offer: RTCSessionDescriptionInit }) => {
       console.log(`[Signaling] Received incoming call from ${callerAlias} (${callerId})`);
       setCallerId({ id: callerId, alias: callerAlias, offer });
       setCallState('ringing');
-    });
+    };
 
-    socket.on('call-answered', async ({ answer, answererId }) => {
+    const handleCallAnswered = async ({ answer, answererId }: { answer: RTCSessionDescriptionInit; answererId: string }) => {
       console.log(`[Signaling] Call answered by ${answererId}`);
       if (peerConnection.current) {
         try {
+          setCallState('connecting');
           await peerConnection.current.setRemoteDescription(new RTCSessionDescription(answer));
           console.log('[WebRTC] Set remote description from answer');
           await processCandidateQueue();
@@ -197,15 +301,15 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
           console.error('[WebRTC] Error applying remote answer:', e);
         }
       }
-    });
+    };
 
-    socket.on('call-rejected', () => {
+    const handleCallRejected = () => {
       console.log('[Signaling] Peer rejected the call');
       setCallState('rejected');
       setTimeout(cleanup, 2000);
-    });
+    };
 
-    socket.on('ice-candidate', async ({ candidate, senderId }) => {
+    const handleIceCandidate = async ({ candidate, senderId }: { candidate: RTCIceCandidateInit; senderId: string }) => {
       // Validate candidate origin
       if (targetUserId.current && senderId !== targetUserId.current) {
         console.warn('[Signaling] Received ICE candidate from unexpected sender. Ignoring.');
@@ -215,7 +319,10 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
       if (peerConnection.current && peerConnection.current.remoteDescription) {
         try {
           await peerConnection.current.addIceCandidate(new RTCIceCandidate(candidate));
-          console.log('[WebRTC] Added remote ICE candidate');
+          console.log('[WebRTC] Added remote ICE candidate', {
+            senderId,
+            candidateType: candidate.candidate?.match(/ typ (\w+)/)?.[1]
+          });
         } catch (e) {
           console.error('[WebRTC] Error adding remote candidate:', e);
         }
@@ -223,20 +330,32 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
         console.log('[WebRTC] Queuing remote ICE candidate (remoteDescription not ready)');
         candidateQueue.current.push(candidate);
       }
-    });
+    };
 
-    socket.on('call-ended', () => {
+    const handleCallEnded = () => {
       console.log('[Signaling] Received call-ended event');
       setCallState('ended');
       setTimeout(cleanup, 2000);
-    });
+    };
+
+    const handleSocketReconnect = () => {
+      console.log('[Signaling] Socket reconnected during call state:', callStateRef.current);
+    };
+
+    socket.on('incoming-call', handleIncomingCall);
+    socket.on('call-answered', handleCallAnswered);
+    socket.on('call-rejected', handleCallRejected);
+    socket.on('ice-candidate', handleIceCandidate);
+    socket.on('call-ended', handleCallEnded);
+    socket.on('connect', handleSocketReconnect);
 
     return () => {
-      socket.off('incoming-call');
-      socket.off('call-answered');
-      socket.off('call-rejected');
-      socket.off('ice-candidate');
-      socket.off('call-ended');
+      socket.off('incoming-call', handleIncomingCall);
+      socket.off('call-answered', handleCallAnswered);
+      socket.off('call-rejected', handleCallRejected);
+      socket.off('ice-candidate', handleIceCandidate);
+      socket.off('call-ended', handleCallEnded);
+      socket.off('connect', handleSocketReconnect);
     };
   }, [socket, cleanup, processCandidateQueue]);
 
