@@ -71,14 +71,12 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
     pc.ontrack = (event) => {
       console.log(`[WebRTC] Remote track received: ${event.track.kind}`);
       // Force a new MediaStream instance to trigger React re-render
-      setRemoteStream(prev => {
-        const streamToUse = event.streams[0] || new MediaStream();
-        if (!event.streams[0]) {
-          streamToUse.addTrack(event.track);
-        }
-        console.log(`[WebRTC] Updating remote stream with ${streamToUse.getTracks().length} tracks`);
-        return new MediaStream(streamToUse.getTracks());
-      });
+      const streamToUse = event.streams[0] || new MediaStream();
+      if (!event.streams[0]) {
+        streamToUse.addTrack(event.track);
+      }
+      console.log(`[WebRTC] Updating remote stream with ${streamToUse.getTracks().length} tracks`);
+      setRemoteStream(new MediaStream(streamToUse.getTracks()));
     };
 
     pc.onicecandidate = (event) => {
