@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Socket } from 'socket.io-client';
 import { useAuth } from '../context/AuthContext';
-import { Send, Loader2, User, Check, CheckCheck, CornerUpLeft, X, Trash2, ChevronLeft, Pencil } from 'lucide-react';
+import { Send, Loader2, User, Check, CheckCheck, CornerUpLeft, X, Trash2, ChevronLeft, Pencil, Download, Paperclip } from 'lucide-react';
 import axios from 'axios';
 import { motion, AnimatePresence } from 'framer-motion';
 import { buildApiUrl, connectSocket } from '../runtimeConfig';
@@ -10,7 +10,11 @@ interface Message {
   _id: string;
   senderId: string;
   receiverId: string;
-  message: string;
+  message?: string;
+  messageType?: 'text' | 'image';
+  fileData?: string;
+  fileName?: string;
+  expiresAt?: string;
   createdAt: string;
   seen: boolean;
   replyTo?: {
@@ -42,11 +46,13 @@ const ChatRoom: React.FC<{
   const [isEditingNickname, setIsEditingNickname] = useState(false);
   const [isConfirmingClear, setIsConfirmingClear] = useState(false);
   const [isSavingNickname, setIsSavingNickname] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
 
   const socketRef = useRef<Socket | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const typingTimeoutRef = useRef<any>(null);
   const reactionTimerRef = useRef<any>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     clearUnread();
@@ -128,15 +134,43 @@ const ChatRoom: React.FC<{
     }
   };
 
-  const handleSend = (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleImageSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (file.size > 8 * 1024 * 1024) {
+      window.alert('File size too large. Maximum 8MB.');
+      return;
+    }
+
+    setIsUploading(true);
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      const base64 = event.target?.result as string;
+      await sendMessage({
+        messageType: 'image',
+        fileData: base64,
+        fileName: file.name
+      });
+      setIsUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    };
+    reader.onerror = () => {
+      setIsUploading(false);
+      window.alert('Failed to read file.');
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const sendMessage = async (payloadOverride?: Partial<any>) => {
     const trimmedMessage = newMessage.trim();
-    if (!trimmedMessage) return;
+    if (!trimmedMessage && !payloadOverride) return;
 
     const payload = {
       receiverId,
       message: trimmedMessage,
-      replyTo: replyingTo?._id
+      replyTo: replyingTo?._id,
+      ...payloadOverride
     };
 
     const sendViaHttp = async () => {
@@ -145,14 +179,11 @@ const ChatRoom: React.FC<{
       });
     };
 
-    const sendMessage = async () => {
-      const socket = socketRef.current;
+    const socket = socketRef.current;
 
-      if (!socket || !socket.connected) {
-        await sendViaHttp();
-        return;
-      }
-
+    if (!socket || !socket.connected) {
+      await sendViaHttp();
+    } else {
       const ack = await new Promise<{ ok: boolean; msg?: string }>((resolve) => {
         let settled = false;
         const timer = window.setTimeout(() => {
@@ -160,7 +191,7 @@ const ChatRoom: React.FC<{
             settled = true;
             resolve({ ok: false, msg: 'Socket timeout' });
           }
-        }, 4000);
+        }, 8000); // Higher timeout for images
 
         socket.emit('sendMessage', payload, (response: { ok: boolean; msg?: string }) => {
           if (!settled) {
@@ -174,15 +205,27 @@ const ChatRoom: React.FC<{
       if (!ack.ok) {
         await sendViaHttp();
       }
-    };
+    }
 
-    setNewMessage('');
+    if (!payloadOverride) setNewMessage('');
     setReplyTo(null);
+  };
 
+  const handleSend = (e: React.FormEvent) => {
+    e.preventDefault();
     sendMessage().catch((err) => {
       console.error('Send Message Error:', err);
       window.alert('Failed to send message. Please check your connection and try again.');
     });
+  };
+
+  const handleDownload = (fileData: string, fileName: string) => {
+    const link = document.createElement('a');
+    link.href = fileData;
+    link.download = fileName || 'fitmask_image.png';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
   };
 
   const handleLongPressStart = (msgId: string) => {
@@ -449,13 +492,37 @@ const ChatRoom: React.FC<{
                     setReplyTo(msg);
                   }
                 }}
-                className={`max-w-[85vw] p-3 rounded-2xl text-sm relative z-10 cursor-grab active:cursor-grabbing ${
+                className={`max-w-[85vw] p-1 rounded-2xl text-sm relative z-10 cursor-grab active:cursor-grabbing ${
                   msg.senderId === user?.id 
                     ? 'bg-white text-black rounded-tr-none self-end' 
                     : 'bg-white/5 border border-white/10 rounded-tl-none self-start'
                 }`}
               >
-                {msg.message}
+                {msg.messageType === 'image' ? (
+                  <div className="relative group/img overflow-hidden rounded-xl">
+                    <img 
+                      src={msg.fileData} 
+                      alt="Uploaded data" 
+                      className="max-w-full max-h-[300px] object-cover rounded-xl"
+                    />
+                    <div className="absolute inset-0 bg-black/40 opacity-0 group-hover/img:opacity-100 transition-opacity flex items-center justify-center gap-4">
+                      <button 
+                        onClick={() => handleDownload(msg.fileData!, msg.fileName || 'image.png')}
+                        className="p-3 rounded-full bg-white/20 backdrop-blur-md text-white hover:bg-white/40 transition-colors"
+                        title="Download"
+                      >
+                        <Download size={20} />
+                      </button>
+                    </div>
+                    {msg.expiresAt && (
+                      <div className="absolute top-2 right-2 px-2 py-1 rounded-md bg-black/60 backdrop-blur-sm text-[8px] uppercase tracking-widest text-white/80 border border-white/10">
+                        Self-destruct active
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="p-2 px-3">{msg.message}</div>
+                )}
                 
                 {/* Reactions Display */}
                 {msg.reactions?.length > 0 && (
@@ -533,7 +600,7 @@ const ChatRoom: React.FC<{
               exit={{ height: 0, opacity: 0 }}
               className="flex items-center justify-between bg-white/5 p-2 px-4 rounded-xl border border-white/10"
             >
-              <div className="truncate text-xs text-white/40 italic">Replying to: {replyingTo.message}</div>
+              <div className="truncate text-xs text-white/40 italic">Replying to: {replyingTo.messageType === 'image' ? '[Image]' : replyingTo.message}</div>
               <button onClick={() => setReplyTo(null)}><X size={14} className="text-white/40" /></button>
             </motion.div>
           )}
@@ -541,13 +608,32 @@ const ChatRoom: React.FC<{
 
         <form onSubmit={handleSend} className="flex gap-2">
           <input 
+            type="file"
+            ref={fileInputRef}
+            onChange={handleImageSelect}
+            accept="image/*"
+            className="hidden"
+          />
+          <button 
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={isUploading}
+            className="w-12 h-12 rounded-full border border-white/10 bg-white/5 flex items-center justify-center text-white/40 hover:text-white transition-colors active:scale-90 disabled:opacity-40"
+          >
+            {isUploading ? <Loader2 size={20} className="animate-spin" /> : <Paperclip size={20} />}
+          </button>
+          <input 
             type="text"
             value={newMessage}
             onChange={handleTyping}
             placeholder="Transmit encrypted data..."
             className="flex-1 bg-white/5 border border-white/10 rounded-full px-4 py-3 text-sm focus:outline-none focus:border-white/20 transition-colors"
           />
-          <button type="submit" className="w-12 h-12 rounded-full bg-white text-black flex items-center justify-center active:scale-90 transition-transform shadow-lg shadow-white/5">
+          <button 
+            type="submit" 
+            disabled={!newMessage.trim()}
+            className="w-12 h-12 rounded-full bg-white text-black flex items-center justify-center active:scale-90 transition-transform shadow-lg shadow-white/5 disabled:opacity-40"
+          >
             <Send size={20} />
           </button>
         </form>

@@ -42,15 +42,15 @@ module.exports = (io) => {
       console.error('[Socket] Status Update Error:', err);
     }
 
-    socket.on('sendMessage', async ({ receiverId, message, replyTo }, acknowledge) => {
-      console.log(`[Socket] Message from ${userId} to ${receiverId}`);
+    socket.on('sendMessage', async ({ receiverId, message, replyTo, messageType = 'text', fileData, fileName }, acknowledge) => {
+      console.log(`[Socket] Message from ${userId} to ${receiverId} (${messageType})`);
       try {
         if (!socket.canAccessVault) {
           socket.emit('error', { msg: 'Vault access required' });
           if (typeof acknowledge === 'function') acknowledge({ ok: false, msg: 'Vault access required' });
           return;
         }
-        if (!message || !receiverId) return;
+        if (!receiverId || (messageType !== 'image' && !message)) return;
 
         await User.bulkWrite([
           {
@@ -67,11 +67,21 @@ module.exports = (io) => {
           }
         ]);
 
-        const encryptedMessage = encrypt(message);
+        const encryptedMessage = message ? encrypt(message) : undefined;
+        
+        let expiresAt;
+        if (messageType === 'image') {
+          expiresAt = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes TTL
+        }
+
         const newMessage = new Message({
           senderId: userId,
           receiverId,
           encryptedMessage,
+          messageType,
+          fileData,
+          fileName,
+          expiresAt,
           replyTo
         });
         await newMessage.save();
@@ -79,9 +89,17 @@ module.exports = (io) => {
         const sender = await User.findById(userId).select('alias').lean();
         let populatedMessage = await newMessage.populate('replyTo', 'encryptedMessage senderId');
         const msgObj = populatedMessage.toObject();
-        msgObj.message = message;
+        
+        if (msgObj.messageType === 'text') {
+          msgObj.message = message;
+        }
+
         if (msgObj.replyTo) {
-          msgObj.replyTo.message = decrypt(msgObj.replyTo.encryptedMessage);
+          try {
+            msgObj.replyTo.message = decrypt(msgObj.replyTo.encryptedMessage);
+          } catch (e) {
+            msgObj.replyTo.message = "[Decryption Error]";
+          }
           delete msgObj.replyTo.encryptedMessage;
         }
 

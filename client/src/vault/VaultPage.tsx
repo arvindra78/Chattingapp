@@ -1,10 +1,11 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import SearchNode from './SearchNode';
 import ChatRoom from './ChatRoom';
-import { MessageSquare, Loader2 } from 'lucide-react';
+import { MessageSquare, Loader2, Trash2, AlertTriangle, X } from 'lucide-react';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import { buildApiUrl, connectSocket } from '../runtimeConfig';
+import { motion, AnimatePresence } from 'framer-motion';
 
 interface Node {
   _id: string;
@@ -12,6 +13,8 @@ interface Node {
   nickname?: string | null;
   fitId: string;
   isOnline: boolean;
+  unreadCount: number;
+  lastInteraction: string;
 }
 
 const VaultPage: React.FC = () => {
@@ -20,6 +23,8 @@ const VaultPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [selectedNode, setSelectedNode] = useState<{ id: string, alias: string, nickname?: string | null } | null>(null);
   const [view, setView] = useState<'nodes' | 'search'>('nodes');
+  const [nodeToDelete, setNodeToDelete] = useState<Node | null>(null);
+  const longPressTimer = useRef<any>(null);
 
   const fetchNodes = async () => {
     try {
@@ -51,9 +56,33 @@ const VaultPage: React.FC = () => {
         setNodes(prev => prev.map(node => node._id === userId ? { ...node, isOnline } : node));
       });
 
-      socket.on('message', () => {
-        // If not in a chat, refresh nodes to show latest conversation
-        if (!selectedNode) fetchNodes();
+      socket.on('message', (msg: any) => {
+        // If not in a chat, update the node list
+        if (!selectedNode) {
+          setNodes(prev => {
+            const senderId = msg.senderId;
+            const existingNodeIndex = prev.findIndex(n => n._id === senderId);
+            
+            const updatedNodes = [...prev];
+            
+            if (existingNodeIndex > -1) {
+              const existingNode = updatedNodes[existingNodeIndex];
+              // Increment unread count if message is from them
+              const newNode = {
+                ...existingNode,
+                unreadCount: existingNode.unreadCount + 1,
+                lastInteraction: msg.createdAt
+              };
+              updatedNodes.splice(existingNodeIndex, 1);
+              updatedNodes.unshift(newNode);
+            } else {
+              // If node isn't in list, refresh the whole list to be safe
+              fetchNodes();
+            }
+            
+            return updatedNodes;
+          });
+        }
       });
 
       return () => {
@@ -61,6 +90,36 @@ const VaultPage: React.FC = () => {
       };
     }
   }, [vaultToken, selectedNode]);
+
+  const handleLongPress = (node: Node) => {
+    if (navigator.vibrate) navigator.vibrate(50);
+    setNodeToDelete(node);
+  };
+
+  const startPress = (node: Node) => {
+    longPressTimer.current = setTimeout(() => handleLongPress(node), 600);
+  };
+
+  const endPress = () => {
+    if (longPressTimer.current) {
+      clearTimeout(longPressTimer.current);
+      longPressTimer.current = null;
+    }
+  };
+
+  const deleteNode = async () => {
+    if (!nodeToDelete) return;
+    try {
+      await axios.delete(buildApiUrl(`/api/sync-center/contacts/${nodeToDelete._id}`), {
+        headers: { 'x-vault-token': vaultToken }
+      });
+      setNodes(prev => prev.filter(n => n._id !== nodeToDelete._id));
+      setNodeToDelete(null);
+    } catch (err) {
+      console.error('Delete Node Error:', err);
+      window.alert('Failed to delete DM. Please try again.');
+    }
+  };
 
   if (selectedNode) {
     return (
@@ -110,7 +169,12 @@ const VaultPage: React.FC = () => {
                 <div 
                   key={node._id} 
                   onClick={() => setSelectedNode({ id: node._id, alias: node.alias, nickname: node.nickname })}
-                  className="glass p-4 rounded-xl flex items-center justify-between active:scale-[0.98] transition-all cursor-pointer"
+                  onMouseDown={() => startPress(node)}
+                  onMouseUp={endPress}
+                  onMouseLeave={endPress}
+                  onTouchStart={() => startPress(node)}
+                  onTouchEnd={endPress}
+                  className="glass p-4 rounded-xl flex items-center justify-between active:scale-[0.98] transition-all cursor-pointer select-none"
                 >
                   <div className="flex items-center gap-3">
                     <div className="relative">
@@ -128,7 +192,14 @@ const VaultPage: React.FC = () => {
                       </div>
                     </div>
                   </div>
-                  <MessageSquare size={18} className="text-white/20" />
+                  <div className="flex items-center gap-4">
+                    {node.unreadCount > 0 && (
+                      <div className="bg-fitness-primary text-black text-[10px] font-bold px-2 py-0.5 rounded-full shadow-[0_0_10px_rgba(var(--fitness-primary-rgb),0.5)]">
+                        {node.unreadCount}
+                      </div>
+                    )}
+                    <MessageSquare size={18} className="text-white/20" />
+                  </div>
                 </div>
               ))}
             </div>
@@ -147,6 +218,44 @@ const VaultPage: React.FC = () => {
       ) : (
         <SearchNode onSelect={(node) => setSelectedNode({ id: node._id, alias: node.alias, nickname: null })} />
       )}
+
+      {/* Delete Confirmation Modal */}
+      <AnimatePresence>
+        {nodeToDelete && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-black/80 backdrop-blur-sm">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.9, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.9, y: 20 }}
+              className="w-full max-w-sm glass border-red-500/20 p-6 rounded-3xl"
+            >
+              <div className="flex items-center gap-3 mb-4 text-red-400">
+                <AlertTriangle size={24} />
+                <h3 className="font-mono text-lg uppercase tracking-wider">Delete Channel?</h3>
+              </div>
+              <p className="text-sm text-white/60 mb-8">
+                This will remove <span className="text-white font-mono">{nodeToDelete.nickname || nodeToDelete.alias}</span> from your active links and hide your message history locally.
+              </p>
+              <div className="flex flex-col gap-3">
+                <button 
+                  onClick={deleteNode}
+                  className="w-full py-4 rounded-2xl bg-red-500 text-white font-bold uppercase tracking-[0.2em] text-xs active:scale-95 transition-all flex items-center justify-center gap-2"
+                >
+                  <Trash2 size={16} />
+                  Terminate Connection
+                </button>
+                <button 
+                  onClick={() => setNodeToDelete(null)}
+                  className="w-full py-4 rounded-2xl bg-white/5 text-white/60 font-bold uppercase tracking-[0.2em] text-xs active:scale-95 transition-all flex items-center justify-center gap-2"
+                >
+                  <X size={16} />
+                  Abort
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </div>
   );
 };
