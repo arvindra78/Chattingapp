@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Socket } from 'socket.io-client';
 import { useAuth } from '../context/AuthContext';
-import { Send, Loader2, User, Check, CheckCheck, CornerUpLeft, X, Trash2, ChevronLeft, Pencil, Download, Paperclip } from 'lucide-react';
+import { Send, Loader2, User, Check, CheckCheck, CornerUpLeft, X, Trash2, ChevronLeft, Pencil, Download, Paperclip, Video } from 'lucide-react';
 import axios from 'axios';
 import { motion, AnimatePresence } from 'framer-motion';
 import { buildApiUrl, connectSocket } from '../runtimeConfig';
@@ -30,8 +30,9 @@ const ChatRoom: React.FC<{
   receiverAlias: string,
   receiverNickname?: string | null,
   onBack: () => void,
-  onNicknameSaved?: (nickname: string | null) => void
-}> = ({ receiverId, receiverAlias, receiverNickname, onBack, onNicknameSaved }) => {
+  onNicknameSaved?: (nickname: string | null) => void,
+  onStartVideoCall?: () => void
+}> = ({ receiverId, receiverAlias, receiverNickname, onBack, onNicknameSaved, onStartVideoCall }) => {
   const { vaultToken, user, clearUnread, refreshUnreadCount } = useAuth();
   const [messages, setMessages] = useState<Message[]>([]);
   const [newMessage, setNewMessage] = useState('');
@@ -331,12 +332,20 @@ const ChatRoom: React.FC<{
         </div>
         <button
           type="button"
+          onClick={onStartVideoCall}
+          className="ml-auto flex h-10 w-10 items-center justify-center rounded-full border border-white/10 bg-white/5 text-white/40 transition-colors hover:text-fitness-primary"
+          aria-label="Start video call"
+        >
+          <Video size={18} />
+        </button>
+        <button
+          type="button"
           onClick={() => {
             setIsConfirmingClear(false);
             setIsEditingNickname((prev) => !prev);
           }}
           disabled={isSavingNickname}
-          className="ml-auto flex h-10 w-10 items-center justify-center rounded-full border border-white/10 bg-white/5 text-white/40 transition-colors hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+          className="ml-2 flex h-10 w-10 items-center justify-center rounded-full border border-white/10 bg-white/5 text-white/40 transition-colors hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
           aria-label="Edit chat nickname"
         >
           {isSavingNickname ? <Loader2 size={16} className="animate-spin" /> : <Pencil size={16} />}

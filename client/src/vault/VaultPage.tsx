@@ -6,6 +6,8 @@ import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import { buildApiUrl, connectSocket } from '../runtimeConfig';
 import { motion, AnimatePresence } from 'framer-motion';
+import VideoCallManager from './VideoCallManager';
+import type { VideoCallManagerHandle } from './VideoCallManager';
 
 interface Node {
   _id: string;
@@ -24,7 +26,9 @@ const VaultPage: React.FC = () => {
   const [selectedNode, setSelectedNode] = useState<{ id: string, alias: string, nickname?: string | null } | null>(null);
   const [view, setView] = useState<'nodes' | 'search'>('nodes');
   const [nodeToDelete, setNodeToDelete] = useState<Node | null>(null);
+  const [socket, setSocket] = useState<any>(null);
   const longPressTimer = useRef<any>(null);
+  const videoCallRef = useRef<VideoCallManagerHandle>(null);
 
   const fetchNodes = async () => {
     try {
@@ -45,18 +49,19 @@ const VaultPage: React.FC = () => {
     }
   }, [selectedNode, view, vaultToken]);
 
-  // Real-time status updates for nodes list
+  // Real-time status updates and socket management
   useEffect(() => {
     if (vaultToken) {
-      const socket = connectSocket({
+      const newSocket = connectSocket({
         auth: { token: vaultToken }
       });
+      setSocket(newSocket);
 
-      socket.on('userStatus', ({ userId, isOnline }: { userId: string, isOnline: boolean }) => {
+      newSocket.on('userStatus', ({ userId, isOnline }: { userId: string, isOnline: boolean }) => {
         setNodes(prev => prev.map(node => node._id === userId ? { ...node, isOnline } : node));
       });
 
-      socket.on('message', (msg: any) => {
+      newSocket.on('message', (msg: any) => {
         // If not in a chat, update the node list
         if (!selectedNode) {
           setNodes(prev => {
@@ -67,7 +72,6 @@ const VaultPage: React.FC = () => {
             
             if (existingNodeIndex > -1) {
               const existingNode = updatedNodes[existingNodeIndex];
-              // Increment unread count if message is from them
               const newNode = {
                 ...existingNode,
                 unreadCount: existingNode.unreadCount + 1,
@@ -76,20 +80,19 @@ const VaultPage: React.FC = () => {
               updatedNodes.splice(existingNodeIndex, 1);
               updatedNodes.unshift(newNode);
             } else {
-              // If node isn't in list, refresh the whole list to be safe
               fetchNodes();
             }
-            
             return updatedNodes;
           });
         }
       });
 
       return () => {
-        socket.disconnect();
+        newSocket.disconnect();
+        setSocket(null);
       };
     }
-  }, [vaultToken, selectedNode]);
+  }, [vaultToken]); // Only depend on vaultToken to keep socket stable
 
   const handleLongPress = (node: Node) => {
     if (navigator.vibrate) navigator.vibrate(50);
@@ -121,108 +124,119 @@ const VaultPage: React.FC = () => {
     }
   };
 
-  if (selectedNode) {
-    return (
-      <div className="fixed inset-0 bg-vault-bg z-[60] flex flex-col">
-        <ChatRoom
-          receiverId={selectedNode.id}
-          receiverAlias={selectedNode.alias}
-          receiverNickname={selectedNode.nickname}
-          onBack={() => setSelectedNode(null)}
-          onNicknameSaved={(nickname) => {
-            setSelectedNode((prev) => prev ? { ...prev, nickname } : prev);
-            setNodes((prev) => prev.map((node) => (
-              node._id === selectedNode.id ? { ...node, nickname } : node
-            )));
-          }}
-        />
-      </div>
-    );
-  }
-
   return (
-    <div className="space-y-8">
-      <div className="flex gap-4 border-b border-white/5">
-        <button 
-          onClick={() => setView('nodes')}
-          className={`pb-3 text-xs uppercase tracking-widest font-bold transition-colors ${view === 'nodes' ? 'text-white border-b border-white' : 'text-white/20'}`}
-        >
-          Active Links
-        </button>
-        <button 
-          onClick={() => setView('search')}
-          className={`pb-3 text-xs uppercase tracking-widest font-bold transition-colors ${view === 'search' ? 'text-white border-b border-white' : 'text-white/20'}`}
-        >
-          Discovery
-        </button>
-      </div>
+    <div className="relative">
+      <VideoCallManager ref={videoCallRef} socket={socket} />
 
-      {view === 'nodes' ? (
-        <div className="space-y-4">
-          <p className="text-[10px] text-white/20 uppercase tracking-[0.2em]">Secure communication channels</p>
-          
-          {loading ? (
-            <div className="py-12 flex justify-center"><Loader2 className="animate-spin text-white/20" /></div>
-          ) : nodes.length > 0 ? (
-            <div className="space-y-3">
-              {nodes.map(node => (
-                <div 
-                  key={node._id} 
-                  onClick={() => setSelectedNode({ id: node._id, alias: node.alias, nickname: node.nickname })}
-                  onMouseDown={() => startPress(node)}
-                  onMouseUp={endPress}
-                  onMouseLeave={endPress}
-                  onTouchStart={() => startPress(node)}
-                  onTouchEnd={endPress}
-                  className="glass p-4 rounded-xl flex items-center justify-between active:scale-[0.98] transition-all cursor-pointer select-none"
-                >
-                  <div className="flex items-center gap-3">
-                    <div className="relative">
-                      <div className="w-10 h-10 rounded-full bg-white/5 flex items-center justify-center text-white/20 font-mono text-xs">
-                        {(node.nickname || node.alias).substring(0, 2)}
-                      </div>
-                      {node.isOnline && (
-                        <div className="absolute bottom-0 right-0 w-3 h-3 bg-green-500 rounded-full border-2 border-vault-bg shadow-[0_0_8px_rgba(34,197,94,0.4)]" />
-                      )}
-                    </div>
-                    <div>
-                      <div className="font-mono text-sm">{node.nickname || node.alias}</div>
-                      <div className="text-[10px] text-white/40 uppercase tracking-tighter">
-                        {node.nickname ? `Alias: ${node.alias}` : (node.isOnline ? 'Active Link' : 'Standby Mode')}
-                      </div>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-4">
-                    {node.unreadCount > 0 && (
-                      <div className="bg-fitness-primary text-black text-[10px] font-bold px-2 py-0.5 rounded-full shadow-[0_0_10px_rgba(var(--fitness-primary-rgb),0.5)]">
-                        {node.unreadCount}
-                      </div>
-                    )}
-                    <MessageSquare size={18} className="text-white/20" />
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="space-y-2 text-center py-12">
-              <p className="text-white/10 text-xs italic">No active encrypted channels identified.</p>
-              <button 
-                onClick={() => setView('search')}
-                className="text-[10px] text-fitness-secondary uppercase font-bold tracking-widest mt-2"
-              >
-                Initiate Discovery
-              </button>
-            </div>
-          )}
+      {selectedNode ? (
+        <div className="fixed inset-0 bg-vault-bg z-[60] flex flex-col">
+          <ChatRoom
+            receiverId={selectedNode.id}
+            receiverAlias={selectedNode.alias}
+            receiverNickname={selectedNode.nickname}
+            onBack={() => setSelectedNode(null)}
+            onStartVideoCall={() => {
+              videoCallRef.current?.startCall(selectedNode.id, selectedNode.nickname || selectedNode.alias);
+            }}
+            onNicknameSaved={(nickname) => {
+              setSelectedNode((prev) => prev ? { ...prev, nickname } : prev);
+              setNodes((prev) => prev.map((node) => (
+                node._id === selectedNode.id ? { ...node, nickname } : node
+              )));
+            }}
+          />
         </div>
       ) : (
-        <SearchNode onSelect={(node) => setSelectedNode({ id: node._id, alias: node.alias, nickname: null })} />
+        <div className="space-y-8">
+          <div className="flex gap-4 border-b border-white/5">
+            <button 
+              onClick={() => setView('nodes')}
+              className={`pb-3 text-xs uppercase tracking-widest font-bold transition-colors ${view === 'nodes' ? 'text-white border-b border-white' : 'text-white/20'}`}
+            >
+              Active Links
+            </button>
+            <button 
+              onClick={() => setView('search')}
+              className={`pb-3 text-xs uppercase tracking-widest font-bold transition-colors ${view === 'search' ? 'text-white border-b border-white' : 'text-white/20'}`}
+            >
+              Discovery
+            </button>
+          </div>
+
+          {view === 'nodes' ? (
+            <div className="space-y-4">
+              <p className="text-[10px] text-white/20 uppercase tracking-[0.2em]">Secure communication channels</p>
+              
+              {loading ? (
+                <div className="py-12 flex justify-center"><Loader2 className="animate-spin text-white/20" /></div>
+              ) : nodes.length > 0 ? (
+                <div className="space-y-3">
+                  {nodes.map(node => (
+                    <div 
+                      key={node._id} 
+                      onClick={() => setSelectedNode({ id: node._id, alias: node.alias, nickname: node.nickname })}
+                      onMouseDown={() => startPress(node)}
+                      onMouseUp={endPress}
+                      onMouseLeave={endPress}
+                      onTouchStart={() => startPress(node)}
+                      onTouchEnd={endPress}
+                      className="glass p-4 rounded-xl flex items-center justify-between active:scale-[0.98] transition-all cursor-pointer select-none"
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="relative">
+                          <div className="w-10 h-10 rounded-full bg-white/5 flex items-center justify-center text-white/20 font-mono text-xs">
+                            {(node.nickname || node.alias).substring(0, 2)}
+                          </div>
+                          {node.isOnline && (
+                            <div className="absolute bottom-0 right-0 w-3 h-3 bg-green-500 rounded-full border-2 border-vault-bg shadow-[0_0_8px_rgba(34,197,94,0.4)]" />
+                          )}
+                        </div>
+                        <div>
+                          <div className="font-mono text-sm">{node.nickname || node.alias}</div>
+                          <div className="text-[10px] text-white/40 uppercase tracking-tighter">
+                            {node.nickname ? `Alias: ${node.alias}` : (node.isOnline ? 'Active Link' : 'Standby Mode')}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-4">
+                        {node.unreadCount > 0 && (
+                          <div className="bg-fitness-primary text-black text-[10px] font-bold px-2 py-0.5 rounded-full shadow-lg shadow-fitness-primary/20">
+                            {node.unreadCount}
+                          </div>
+                        )}
+                        <MessageSquare size={18} className="text-white/20" />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="space-y-2 text-center py-12">
+                  <p className="text-white/10 text-xs italic">No active encrypted channels identified.</p>
+                  <button 
+                    onClick={() => setView('search')}
+                    className="text-[10px] text-fitness-secondary uppercase font-bold tracking-widest mt-2"
+                  >
+                    Initiate Discovery
+                  </button>
+                </div>
+              )}
+            </div>
+          ) : (
+            <SearchNode onSelect={(node) => setSelectedNode({ id: node._id, alias: node.alias, nickname: null })} />
+          )}
+        </div>
       )}
 
       {/* Delete Confirmation Modal */}
       <AnimatePresence>
         {nodeToDelete && (
-          <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-black/80 backdrop-blur-sm">
+          <motion.div 
+            key="delete-modal"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-black/80 backdrop-blur-sm"
+          >
             <motion.div 
               initial={{ opacity: 0, scale: 0.9, y: 20 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
@@ -253,7 +267,7 @@ const VaultPage: React.FC = () => {
                 </button>
               </div>
             </motion.div>
-          </div>
+          </motion.div>
         )}
       </AnimatePresence>
     </div>

@@ -162,6 +162,59 @@ module.exports = (io) => {
       socket.to(`vault:${receiverId}`).emit('typing', { senderId: userId, isTyping });
     });
 
+    // --- WebRTC Video Call Signaling ---
+    socket.on('call-user', ({ receiverId, offer }) => {
+      console.log(`[Socket] Call initiated by ${userId} to ${receiverId}`);
+      socket.to(`vault:${receiverId}`).emit('incoming-call', {
+        callerId: userId,
+        callerAlias: socket.user.alias || 'User',
+        offer
+      });
+    });
+
+    socket.on('answer-call', ({ callerId, answer }) => {
+      console.log(`[Socket] Call answered by ${userId} for caller ${callerId}`);
+      socket.to(`vault:${callerId}`).emit('call-answered', {
+        answererId: userId,
+        answer
+      });
+    });
+
+    socket.on('reject-call', ({ callerId }) => {
+      console.log(`[Socket] Call rejected by ${userId} for caller ${callerId}`);
+      socket.to(`vault:${callerId}`).emit('call-rejected', {
+        reason: 'Call rejected'
+      });
+    });
+
+    socket.on('webrtc-offer', ({ receiverId, offer }) => {
+      socket.to(`vault:${receiverId}`).emit('webrtc-offer', {
+        offer,
+        senderId: userId
+      });
+    });
+
+    socket.on('webrtc-answer', ({ callerId, answer }) => {
+      socket.to(`vault:${callerId}`).emit('webrtc-answer', {
+        answer,
+        senderId: userId
+      });
+    });
+
+    socket.on('ice-candidate', ({ receiverId, candidate }) => {
+      socket.to(`vault:${receiverId}`).emit('ice-candidate', {
+        candidate,
+        senderId: userId
+      });
+    });
+
+    socket.on('end-call', ({ receiverId }) => {
+      socket.to(`vault:${receiverId}`).emit('call-ended', {
+        senderId: userId
+      });
+    });
+    // --- End WebRTC Signaling ---
+
     socket.on('disconnect', async () => {
       console.log(`[Socket] Vault disconnect: ${userId}`);
       try {
