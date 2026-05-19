@@ -1,4 +1,4 @@
-import { io, type ManagerOptions, type SocketOptions } from 'socket.io-client';
+import { io, type ManagerOptions, type Socket, type SocketOptions } from 'socket.io-client';
 
 const trimTrailingSlash = (value: string) => value.replace(/\/+$/, '');
 
@@ -23,3 +23,37 @@ export const connectSocket = (options: Partial<ManagerOptions & SocketOptions> =
     reconnectionDelay: 1000,
     ...options
   });
+
+let vaultSocketEntry: { token: string; socket: Socket; refCount: number } | null = null;
+
+export const getVaultSocket = (vaultToken: string) => {
+  if (vaultSocketEntry?.token === vaultToken && vaultSocketEntry.socket.connected) {
+    vaultSocketEntry.refCount += 1;
+    return vaultSocketEntry.socket;
+  }
+
+  if (vaultSocketEntry?.token === vaultToken && !vaultSocketEntry.socket.connected) {
+    vaultSocketEntry.refCount += 1;
+    return vaultSocketEntry.socket;
+  }
+
+  if (vaultSocketEntry) {
+    vaultSocketEntry.socket.disconnect();
+  }
+
+  const socket = connectSocket({
+    auth: { token: vaultToken }
+  });
+  vaultSocketEntry = { token: vaultToken, socket, refCount: 1 };
+  return socket;
+};
+
+export const releaseVaultSocket = (socket: Socket | null) => {
+  if (!vaultSocketEntry || vaultSocketEntry.socket !== socket) return;
+
+  vaultSocketEntry.refCount -= 1;
+  if (vaultSocketEntry.refCount <= 0) {
+    vaultSocketEntry.socket.disconnect();
+    vaultSocketEntry = null;
+  }
+};

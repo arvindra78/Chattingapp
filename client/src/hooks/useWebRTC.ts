@@ -43,12 +43,19 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
   const localStreamRef = useRef<MediaStream | null>(null);
   const targetUserId = useRef<string | null>(null);
   const candidateQueue = useRef<RTCIceCandidateInit[]>([]);
+  const pendingLocalCandidates = useRef<RTCIceCandidate[]>([]);
   const remoteStreamRef = useRef<MediaStream | null>(null);
   const callStateRef = useRef<CallState>('idle');
+  const socketRef = useRef<Socket | null>(null);
+  const makingOffer = useRef(false);
 
   useEffect(() => {
     callStateRef.current = callState;
   }, [callState]);
+
+  useEffect(() => {
+    socketRef.current = socket;
+  }, [socket]);
 
   const logSelectedCandidatePair = useCallback(async (pc: RTCPeerConnection) => {
     try {
@@ -88,7 +95,26 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
     setCallerId(null);
     targetUserId.current = null;
     candidateQueue.current = [];
+    pendingLocalCandidates.current = [];
     localStreamRef.current = null;
+    makingOffer.current = false;
+  }, []);
+
+  const flushPendingLocalCandidates = useCallback(() => {
+    const activeSocket = socketRef.current;
+    const receiverId = targetUserId.current;
+
+    if (!activeSocket?.connected || !receiverId || pendingLocalCandidates.current.length === 0) {
+      return;
+    }
+
+    console.log(`[WebRTC] Flushing ${pendingLocalCandidates.current.length} queued local ICE candidates`);
+    while (pendingLocalCandidates.current.length > 0) {
+      const candidate = pendingLocalCandidates.current.shift();
+      if (candidate) {
+        activeSocket.emit('ice-candidate', { receiverId, candidate });
+      }
+    }
   }, []);
 
   const processCandidateQueue = useCallback(async () => {
@@ -130,6 +156,15 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
   }, []);
 
   const createPeerConnection = useCallback((remotePeerId: string, stream: MediaStream) => {
+    if (peerConnection.current && peerConnection.current.connectionState !== 'closed') {
+      console.warn('[WebRTC] Reusing existing RTCPeerConnection instead of creating a duplicate', {
+        connectionState: peerConnection.current.connectionState,
+        iceConnectionState: peerConnection.current.iceConnectionState,
+        signalingState: peerConnection.current.signalingState
+      });
+      return peerConnection.current;
+    }
+
     console.log(`[WebRTC] Creating RTCPeerConnection for peer: ${remotePeerId}`);
     console.log('[WebRTC] ICE config', {
       hasTurn: TURN_URLS.length > 0,
@@ -164,17 +199,23 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
     };
 
     pc.onicecandidate = (event) => {
-      if (event.candidate && socket) {
+      if (event.candidate) {
         console.log('[WebRTC] Sending ICE candidate', {
           type: event.candidate.type,
           protocol: event.candidate.protocol,
           address: event.candidate.address,
           port: event.candidate.port
         });
-        socket.emit('ice-candidate', {
-          receiverId: remotePeerId,
-          candidate: event.candidate
-        });
+        const activeSocket = socketRef.current;
+        if (activeSocket?.connected) {
+          activeSocket.emit('ice-candidate', {
+            receiverId: remotePeerId,
+            candidate: event.candidate
+          });
+        } else {
+          console.warn('[WebRTC] Socket unavailable; queueing local ICE candidate');
+          pendingLocalCandidates.current.push(event.candidate);
+        }
       } else if (!event.candidate) {
         console.log('[WebRTC] ICE candidate gathering complete');
       }
@@ -216,32 +257,46 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
       console.log(`[WebRTC] Signaling state change: ${pc.signalingState}`);
     };
 
+    pc.onnegotiationneeded = () => {
+      console.log('[WebRTC] negotiationneeded fired; manual offer flow owns negotiation');
+    };
+
     peerConnection.current = pc;
     return pc;
-  }, [socket, cleanup, applyVideoSenderParameters, logSelectedCandidatePair]);
+  }, [cleanup, applyVideoSenderParameters, logSelectedCandidatePair]);
 
   // Actions
   const initiateCall = useCallback(async (receiverId: string, stream: MediaStream) => {
-    if (!socket) return;
+    const activeSocket = socketRef.current;
+    if (!activeSocket) return;
+    if (makingOffer.current) {
+      console.warn('[WebRTC] Offer already in progress; ignoring duplicate initiateCall');
+      return;
+    }
     console.log(`[WebRTC] Starting call initiation sequence to: ${receiverId}`);
     localStreamRef.current = stream;
     targetUserId.current = receiverId;
     setCallState('calling');
 
     try {
+      makingOffer.current = true;
       const pc = createPeerConnection(receiverId, stream);
       const offer = await pc.createOffer();
       console.log('[WebRTC] Created local SDP offer');
       await pc.setLocalDescription(offer);
-      socket.emit('call-user', { receiverId, offer });
+      console.log('[WebRTC] Set local description for offer');
+      activeSocket.emit('call-user', { receiverId, offer });
     } catch (err) {
       console.error('[WebRTC] Error during initiateCall:', err);
       setCallState('failed');
+    } finally {
+      makingOffer.current = false;
     }
-  }, [socket, createPeerConnection]);
+  }, [createPeerConnection]);
 
   const acceptCall = useCallback(async (callerId: string, offer: RTCSessionDescriptionInit, stream: MediaStream) => {
-    if (!socket) return;
+    const activeSocket = socketRef.current;
+    if (!activeSocket) return;
     console.log(`[WebRTC] Acceptance sequence started for caller: ${callerId}`);
     localStreamRef.current = stream;
     targetUserId.current = callerId;
@@ -253,31 +308,34 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
       await pc.setRemoteDescription(new RTCSessionDescription(offer));
       console.log('[WebRTC] Set remote description from incoming offer');
       const answer = await pc.createAnswer();
+      console.log('[WebRTC] Created SDP answer');
       await pc.setLocalDescription(answer);
-      console.log('[WebRTC] Created and set local SDP answer');
-      socket.emit('answer-call', { callerId, answer });
+      console.log('[WebRTC] Set local description for answer');
+      activeSocket.emit('answer-call', { callerId, answer });
       
       await processCandidateQueue();
     } catch (err) {
       console.error('[WebRTC] Error during acceptCall:', err);
       setCallState('failed');
     }
-  }, [socket, createPeerConnection, processCandidateQueue]);
+  }, [createPeerConnection, processCandidateQueue]);
 
   const rejectCall = useCallback((callerId: string) => {
-    if (!socket) return;
+    const activeSocket = socketRef.current;
+    if (!activeSocket) return;
     console.log(`[WebRTC] Rejecting call request from: ${callerId}`);
-    socket.emit('reject-call', { callerId });
+    activeSocket.emit('reject-call', { callerId });
     cleanup();
-  }, [socket, cleanup]);
+  }, [cleanup]);
 
   const endCall = useCallback(() => {
-    if (socket && targetUserId.current) {
+    const activeSocket = socketRef.current;
+    if (activeSocket && targetUserId.current) {
       console.log(`[WebRTC] Explicitly ending call with: ${targetUserId.current}`);
-      socket.emit('end-call', { receiverId: targetUserId.current });
+      activeSocket.emit('end-call', { receiverId: targetUserId.current });
     }
     cleanup();
-  }, [socket, cleanup]);
+  }, [cleanup]);
 
   // Signaling Listeners
   useEffect(() => {
@@ -285,6 +343,11 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
 
     const handleIncomingCall = ({ callerId, callerAlias, offer }: { callerId: string; callerAlias: string; offer: RTCSessionDescriptionInit }) => {
       console.log(`[Signaling] Received incoming call from ${callerAlias} (${callerId})`);
+      if (peerConnection.current && callStateRef.current !== 'idle') {
+        console.warn('[Signaling] Incoming call received while already in a call; rejecting duplicate/busy call');
+        socketRef.current?.emit('reject-call', { callerId });
+        return;
+      }
       setCallerId({ id: callerId, alias: callerAlias, offer });
       setCallState('ringing');
     };
@@ -293,6 +356,13 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
       console.log(`[Signaling] Call answered by ${answererId}`);
       if (peerConnection.current) {
         try {
+          if (peerConnection.current.remoteDescription || peerConnection.current.signalingState !== 'have-local-offer') {
+            console.warn('[WebRTC] Ignoring duplicate or out-of-order answer', {
+              hasRemoteDescription: Boolean(peerConnection.current.remoteDescription),
+              signalingState: peerConnection.current.signalingState
+            });
+            return;
+          }
           setCallState('connecting');
           await peerConnection.current.setRemoteDescription(new RTCSessionDescription(answer));
           console.log('[WebRTC] Set remote description from answer');
@@ -340,7 +410,23 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
 
     const handleSocketReconnect = () => {
       console.log('[Signaling] Socket reconnected during call state:', callStateRef.current);
+      flushPendingLocalCandidates();
     };
+
+    const handleSocketDisconnect = (reason: string) => {
+      console.warn('[Signaling] Socket disconnected during call state:', {
+        callState: callStateRef.current,
+        reason
+      });
+    };
+
+    socket.off('incoming-call', handleIncomingCall);
+    socket.off('call-answered', handleCallAnswered);
+    socket.off('call-rejected', handleCallRejected);
+    socket.off('ice-candidate', handleIceCandidate);
+    socket.off('call-ended', handleCallEnded);
+    socket.off('connect', handleSocketReconnect);
+    socket.off('disconnect', handleSocketDisconnect);
 
     socket.on('incoming-call', handleIncomingCall);
     socket.on('call-answered', handleCallAnswered);
@@ -348,6 +434,7 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
     socket.on('ice-candidate', handleIceCandidate);
     socket.on('call-ended', handleCallEnded);
     socket.on('connect', handleSocketReconnect);
+    socket.on('disconnect', handleSocketDisconnect);
 
     return () => {
       socket.off('incoming-call', handleIncomingCall);
@@ -356,8 +443,9 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
       socket.off('ice-candidate', handleIceCandidate);
       socket.off('call-ended', handleCallEnded);
       socket.off('connect', handleSocketReconnect);
+      socket.off('disconnect', handleSocketDisconnect);
     };
-  }, [socket, cleanup, processCandidateQueue]);
+  }, [socket, cleanup, processCandidateQueue, flushPendingLocalCandidates]);
 
   return {
     callState,

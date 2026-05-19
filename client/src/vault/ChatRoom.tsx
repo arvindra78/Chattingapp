@@ -4,7 +4,7 @@ import { useAuth } from '../context/AuthContext';
 import { Send, Loader2, User, Check, CheckCheck, CornerUpLeft, X, Trash2, ChevronLeft, Pencil, Download, Paperclip, Video } from 'lucide-react';
 import axios from 'axios';
 import { motion, AnimatePresence } from 'framer-motion';
-import { buildApiUrl, connectSocket } from '../runtimeConfig';
+import { buildApiUrl, getVaultSocket, releaseVaultSocket } from '../runtimeConfig';
 
 interface Message {
   _id: string;
@@ -58,7 +58,9 @@ const ChatRoom: React.FC<{
   useEffect(() => {
     clearUnread();
 
-    const socket = connectSocket({ auth: { token: vaultToken } });
+    if (!vaultToken) return;
+
+    const socket = getVaultSocket(vaultToken);
     socketRef.current = socket;
 
     const fetchHistory = async () => {
@@ -78,7 +80,7 @@ const ChatRoom: React.FC<{
 
     fetchHistory();
 
-    socket.on('message', (msg: Message) => {
+    const handleMessage = (msg: Message) => {
       if ((msg.senderId === receiverId && msg.receiverId === user?.id) || 
           (msg.senderId === user?.id && msg.receiverId === receiverId)) {
         setMessages(prev => [...prev, msg]);
@@ -88,28 +90,46 @@ const ChatRoom: React.FC<{
           refreshUnreadCount();
         }
       }
-    });
+    };
 
-    socket.on('reactionUpdate', ({ messageId, reactions }: { messageId: string, reactions: any[] }) => {
+    const handleReactionUpdate = ({ messageId, reactions }: { messageId: string, reactions: any[] }) => {
       setMessages(prev => prev.map(m => m._id === messageId ? { ...m, reactions } : m));
-    });
+    };
 
-    socket.on('messagesSeen', ({ seenBy }: { seenBy: string }) => {
+    const handleMessagesSeen = ({ seenBy }: { seenBy: string }) => {
       if (seenBy === receiverId) {
         setMessages(prev => prev.map(m => m.senderId === user?.id ? { ...m, seen: true } : m));
       }
-    });
+    };
 
-    socket.on('typing', ({ senderId, isTyping }: { senderId: string, isTyping: boolean }) => {
+    const handleTypingEvent = ({ senderId, isTyping }: { senderId: string, isTyping: boolean }) => {
       if (senderId === receiverId) setIsPeerTyping(isTyping);
-    });
+    };
 
-    socket.on('userStatus', ({ userId, isOnline }: { userId: string, isOnline: boolean }) => {
+    const handleUserStatus = ({ userId, isOnline }: { userId: string, isOnline: boolean }) => {
       if (userId === receiverId) setIsPeerOnline(isOnline);
-    });
+    };
+
+    socket.off('message', handleMessage);
+    socket.off('reactionUpdate', handleReactionUpdate);
+    socket.off('messagesSeen', handleMessagesSeen);
+    socket.off('typing', handleTypingEvent);
+    socket.off('userStatus', handleUserStatus);
+
+    socket.on('message', handleMessage);
+    socket.on('reactionUpdate', handleReactionUpdate);
+    socket.on('messagesSeen', handleMessagesSeen);
+    socket.on('typing', handleTypingEvent);
+    socket.on('userStatus', handleUserStatus);
 
     return () => {
-      socket.disconnect();
+      socket.off('message', handleMessage);
+      socket.off('reactionUpdate', handleReactionUpdate);
+      socket.off('messagesSeen', handleMessagesSeen);
+      socket.off('typing', handleTypingEvent);
+      socket.off('userStatus', handleUserStatus);
+      releaseVaultSocket(socket);
+      socketRef.current = null;
     };
   }, [receiverId, vaultToken, user?.id]);
 

@@ -4,7 +4,7 @@ import ChatRoom from './ChatRoom';
 import { MessageSquare, Loader2, Trash2, AlertTriangle, X } from 'lucide-react';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
-import { buildApiUrl, connectSocket } from '../runtimeConfig';
+import { buildApiUrl, getVaultSocket, releaseVaultSocket } from '../runtimeConfig';
 import { motion, AnimatePresence } from 'framer-motion';
 import VideoCallManager from './VideoCallManager';
 import type { VideoCallManagerHandle } from './VideoCallManager';
@@ -29,6 +29,11 @@ const VaultPage: React.FC = () => {
   const [socket, setSocket] = useState<any>(null);
   const longPressTimer = useRef<any>(null);
   const videoCallRef = useRef<VideoCallManagerHandle>(null);
+  const selectedNodeRef = useRef<typeof selectedNode>(null);
+
+  useEffect(() => {
+    selectedNodeRef.current = selectedNode;
+  }, [selectedNode]);
 
   const fetchNodes = async () => {
     try {
@@ -52,18 +57,16 @@ const VaultPage: React.FC = () => {
   // Real-time status updates and socket management
   useEffect(() => {
     if (vaultToken) {
-      const newSocket = connectSocket({
-        auth: { token: vaultToken }
-      });
+      const newSocket = getVaultSocket(vaultToken);
       setSocket(newSocket);
 
-      newSocket.on('userStatus', ({ userId, isOnline }: { userId: string, isOnline: boolean }) => {
+      const handleUserStatus = ({ userId, isOnline }: { userId: string, isOnline: boolean }) => {
         setNodes(prev => prev.map(node => node._id === userId ? { ...node, isOnline } : node));
-      });
+      };
 
-      newSocket.on('message', (msg: any) => {
+      const handleMessage = (msg: any) => {
         // If not in a chat, update the node list
-        if (!selectedNode) {
+        if (!selectedNodeRef.current) {
           setNodes(prev => {
             const senderId = msg.senderId;
             const existingNodeIndex = prev.findIndex(n => n._id === senderId);
@@ -85,10 +88,32 @@ const VaultPage: React.FC = () => {
             return updatedNodes;
           });
         }
-      });
+      };
+
+      const handleConnect = () => {
+        console.log('[VaultSocket] Connected shared vault socket', newSocket.id);
+      };
+
+      const handleDisconnect = (reason: string) => {
+        console.warn('[VaultSocket] Shared vault socket disconnected', reason);
+      };
+
+      newSocket.off('userStatus', handleUserStatus);
+      newSocket.off('message', handleMessage);
+      newSocket.off('connect', handleConnect);
+      newSocket.off('disconnect', handleDisconnect);
+
+      newSocket.on('userStatus', handleUserStatus);
+      newSocket.on('message', handleMessage);
+      newSocket.on('connect', handleConnect);
+      newSocket.on('disconnect', handleDisconnect);
 
       return () => {
-        newSocket.disconnect();
+        newSocket.off('userStatus', handleUserStatus);
+        newSocket.off('message', handleMessage);
+        newSocket.off('connect', handleConnect);
+        newSocket.off('disconnect', handleDisconnect);
+        releaseVaultSocket(newSocket);
         setSocket(null);
       };
     }
