@@ -15,11 +15,46 @@ type ResetReason = 'manual' | 'ended' | 'rejected' | 'failed' | 'unmount';
 const parseTurnUrls = (value: string | undefined) =>
   value?.split(',').map((url) => url.trim()).filter(Boolean) || [];
 
-const TURN_URLS = parseTurnUrls(import.meta.env.VITE_TURN_URLS);
+const expandTurnUrls = (urls: string[]) => {
+  const expanded = new Set<string>();
+
+  urls.forEach((url) => {
+    expanded.add(url);
+    const match = url.match(/^(turns?):([^:?]+)(?::(\d+))?/);
+    if (!match) return;
+
+    const [, scheme, host, port] = match;
+    if (scheme === 'turn') {
+      expanded.add(`turn:${host}:${port || '3478'}?transport=udp`);
+      expanded.add(`turn:${host}:${port || '3478'}?transport=tcp`);
+      expanded.add(`turns:${host}:5349?transport=tcp`);
+      expanded.add(`turns:${host}:443?transport=tcp`);
+    } else {
+      expanded.add(`turns:${host}:${port || '5349'}?transport=tcp`);
+      expanded.add(`turns:${host}:443?transport=tcp`);
+    }
+  });
+
+  return Array.from(expanded);
+};
+
+const TURN_HOST = import.meta.env.VITE_TURN_HOST?.trim();
+const TURN_URLS = expandTurnUrls([
+  ...parseTurnUrls(import.meta.env.VITE_TURN_URLS),
+  ...(TURN_HOST
+    ? [
+        `turn:${TURN_HOST}:3478?transport=udp`,
+        `turn:${TURN_HOST}:3478?transport=tcp`,
+        `turns:${TURN_HOST}:5349?transport=tcp`,
+        `turns:${TURN_HOST}:443?transport=tcp`
+      ]
+    : [])
+]);
 const TURN_USERNAME = import.meta.env.VITE_TURN_USERNAME?.trim();
 const TURN_CREDENTIAL = import.meta.env.VITE_TURN_CREDENTIAL?.trim();
 const ICE_TRANSPORT_POLICY: RTCIceTransportPolicy =
-  import.meta.env.VITE_ICE_TRANSPORT_POLICY === 'relay' ? 'relay' : 'all';
+  import.meta.env.VITE_FORCE_RELAY === 'true' || import.meta.env.VITE_ICE_TRANSPORT_POLICY === 'relay' ? 'relay' : 'all';
+const HAS_TURN_CREDENTIALS = TURN_URLS.length > 0 && Boolean(TURN_USERNAME && TURN_CREDENTIAL);
 
 const rtcConfig: RTCConfiguration = {
   iceServers: [
@@ -29,7 +64,7 @@ const rtcConfig: RTCConfiguration = {
         'stun:stun1.l.google.com:19302'
       ]
     },
-    ...(TURN_URLS.length && TURN_USERNAME && TURN_CREDENTIAL
+    ...(HAS_TURN_CREDENTIALS
       ? [{
           urls: TURN_URLS,
           username: TURN_USERNAME,
@@ -49,6 +84,7 @@ const DISCONNECT_GRACE_MS = 12_000;
 const DELAYED_IDLE_MS = 1_200;
 const STATS_INTERVAL_MS = 5_000;
 const MAX_ICE_RESTARTS = 1;
+const ICE_CONNECTIVITY_TIMEOUT_MS = 25_000;
 
 const createCallId = () => {
   if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
@@ -60,6 +96,20 @@ const getCandidateKey = (candidate: RTCIceCandidateInit) =>
 
 const hasCallId = (callId: unknown): callId is string =>
   typeof callId === 'string' && callId.trim().length > 0;
+
+const parseCandidateDetails = (candidate: RTCIceCandidateInit | RTCIceCandidate) => {
+  const raw = candidate.candidate || '';
+  return {
+    raw,
+    foundation: raw.match(/^candidate:(\S+)/)?.[1],
+    protocol: raw.match(/\s(udp|tcp)\s/i)?.[1]?.toLowerCase(),
+    address: raw.match(/\s(?:udp|tcp)\s+\d+\s+([^\s]+)\s+\d+/i)?.[1],
+    port: raw.match(/\s(?:udp|tcp)\s+\d+\s+[^\s]+\s+(\d+)/i)?.[1],
+    type: raw.match(/\styp\s(\w+)/)?.[1],
+    tcpType: raw.match(/\stcptype\s(\w+)/)?.[1],
+    isRelay: raw.includes(' typ relay')
+  };
+};
 
 export const useWebRTC = (socket: Socket | null, _userId: string | undefined) => {
   const [callState, setCallState] = useState<CallState>('idle');
@@ -80,10 +130,14 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
   const disconnectTimerRef = useRef<number | null>(null);
   const delayedResetTimerRef = useRef<number | null>(null);
   const statsTimerRef = useRef<number | null>(null);
+  const iceConnectivityTimerRef = useRef<number | null>(null);
   const offerInFlightRef = useRef(false);
   const iceRestartCountRef = useRef(0);
   const iceRestartInFlightRef = useRef(false);
   const degradedVideoRef = useRef(false);
+  const localCandidateTypesRef = useRef<Set<string>>(new Set());
+  const remoteCandidateTypesRef = useRef<Set<string>>(new Set());
+  const relayCandidateSeenRef = useRef({ local: false, remote: false });
   const lastStatsRef = useRef<{
     timestamp: number;
     bytesSent: number;
@@ -126,6 +180,13 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
     }
   }, []);
 
+  const clearIceConnectivityTimer = useCallback(() => {
+    if (iceConnectivityTimerRef.current) {
+      window.clearTimeout(iceConnectivityTimerRef.current);
+      iceConnectivityTimerRef.current = null;
+    }
+  }, []);
+
   const stopStatsMonitor = useCallback(() => {
     if (statsTimerRef.current) {
       window.clearInterval(statsTimerRef.current);
@@ -165,6 +226,7 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
     log('WebRTC', 'Resetting call', { nextState, reason, endingCallId });
     clearDisconnectTimer();
     clearDelayedResetTimer();
+    clearIceConnectivityTimer();
     stopStatsMonitor();
     closePeer();
     stopStreamTracks(localStreamRef.current, 'local');
@@ -179,12 +241,15 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
     localCandidateQueueRef.current = [];
     seenRemoteCandidateKeysRef.current.clear();
     seenLocalCandidateKeysRef.current.clear();
+    localCandidateTypesRef.current.clear();
+    remoteCandidateTypesRef.current.clear();
+    relayCandidateSeenRef.current = { local: false, remote: false };
     offerInFlightRef.current = false;
     iceRestartCountRef.current = 0;
     iceRestartInFlightRef.current = false;
     degradedVideoRef.current = false;
     setCallState(nextState);
-  }, [clearDelayedResetTimer, clearDisconnectTimer, closePeer, log, stopStatsMonitor, stopStreamTracks]);
+  }, [clearDelayedResetTimer, clearDisconnectTimer, clearIceConnectivityTimer, closePeer, log, stopStatsMonitor, stopStreamTracks]);
 
   const scheduleIdleReset = useCallback((expectedCallId: string | null, delayMs = DELAYED_IDLE_MS) => {
     clearDelayedResetTimer();
@@ -278,6 +343,78 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
     }
   }, [log]);
 
+  const logSelectedCandidatePair = useCallback(async (label: string) => {
+    const pc = peerRef.current;
+    if (!pc) return;
+
+    try {
+      const stats = await pc.getStats();
+      let selectedPair: any = null;
+      stats.forEach((report) => {
+        if (report.type === 'candidate-pair' && report.state === 'succeeded' && report.nominated) {
+          selectedPair = report;
+        }
+      });
+
+      if (!selectedPair) {
+        log('ICE', 'No selected candidate pair yet', { label });
+        return;
+      }
+
+      const local = stats.get(selectedPair.localCandidateId);
+      const remote = stats.get(selectedPair.remoteCandidateId);
+      log('ICE', 'Selected candidate pair', {
+        label,
+        localType: local?.candidateType,
+        localProtocol: local?.protocol,
+        localAddress: local?.address || local?.ip,
+        localPort: local?.port,
+        remoteType: remote?.candidateType,
+        remoteProtocol: remote?.protocol,
+        remoteAddress: remote?.address || remote?.ip,
+        remotePort: remote?.port,
+        usingRelay: local?.candidateType === 'relay' || remote?.candidateType === 'relay',
+        currentRoundTripTime: selectedPair.currentRoundTripTime,
+        availableOutgoingBitrate: selectedPair.availableOutgoingBitrate
+      });
+    } catch (err) {
+      log('ICE', 'Failed to inspect selected candidate pair', { err });
+    }
+  }, [log]);
+
+  const logTurnHealth = useCallback((reason: string) => {
+    log('ICE', 'TURN/ICE health diagnostic', {
+      reason,
+      configuredTurnUrls: TURN_URLS,
+      hasTurnCredentials: HAS_TURN_CREDENTIALS,
+      iceTransportPolicy: rtcConfig.iceTransportPolicy,
+      localCandidateTypes: Array.from(localCandidateTypesRef.current),
+      remoteCandidateTypes: Array.from(remoteCandidateTypesRef.current),
+      localRelayCandidateSeen: relayCandidateSeenRef.current.local,
+      remoteRelayCandidateSeen: relayCandidateSeenRef.current.remote
+    });
+
+    if (!HAS_TURN_CREDENTIALS) {
+      log('ICE', 'TURN is not configured with credentials; strict/mobile NAT will likely fail');
+    } else if (!relayCandidateSeenRef.current.local) {
+      log('ICE', 'No local relay candidate gathered; TURN URL/auth/firewall is likely broken');
+    }
+  }, [log]);
+
+  const startIceConnectivityTimer = useCallback(() => {
+    clearIceConnectivityTimer();
+    iceConnectivityTimerRef.current = window.setTimeout(() => {
+      const pc = peerRef.current;
+      if (!pc || pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') return;
+
+      log('ICE', 'ICE connectivity failure timeout', {
+        timeoutMs: ICE_CONNECTIVITY_TIMEOUT_MS
+      });
+      logTurnHealth('connectivity-timeout');
+      void logSelectedCandidatePair('connectivity-timeout');
+    }, ICE_CONNECTIVITY_TIMEOUT_MS);
+  }, [clearIceConnectivityTimer, log, logSelectedCandidatePair, logTurnHealth]);
+
   const restartIce = useCallback(async () => {
     const pc = peerRef.current;
     const receiverId = targetUserIdRef.current;
@@ -285,6 +422,7 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
 
     if (iceRestartCountRef.current >= MAX_ICE_RESTARTS) {
       log('Recovery', 'ICE restart limit reached');
+      logTurnHealth('ice-restart-limit');
       setCallState('failed');
       return;
     }
@@ -309,11 +447,12 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
       });
     } catch (err) {
       log('Recovery', 'ICE restart failed', { err });
+      logTurnHealth('ice-restart-failed');
       setCallState('failed');
     } finally {
       iceRestartInFlightRef.current = false;
     }
-  }, [emitSignal, log]);
+  }, [emitSignal, log, logTurnHealth]);
 
   const startStatsMonitor = useCallback(() => {
     stopStatsMonitor();
@@ -329,6 +468,9 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
         let packetsReceived = 0;
         let selectedLocalType: string | undefined;
         let selectedRemoteType: string | undefined;
+        let selectedLocalProtocol: string | undefined;
+        let selectedRemoteProtocol: string | undefined;
+        let selectedRtt: number | undefined;
 
         stats.forEach((report) => {
           if (report.type === 'outbound-rtp' && report.kind === 'video') {
@@ -344,6 +486,9 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
             const remote = stats.get(report.remoteCandidateId);
             selectedLocalType = local?.candidateType;
             selectedRemoteType = remote?.candidateType;
+            selectedLocalProtocol = local?.protocol;
+            selectedRemoteProtocol = remote?.protocol;
+            selectedRtt = report.currentRoundTripTime;
           }
         });
 
@@ -378,7 +523,11 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
 
         log('WebRTC', 'Connection stats sample', {
           selectedLocalType,
-          selectedRemoteType
+          selectedRemoteType,
+          selectedLocalProtocol,
+          selectedRemoteProtocol,
+          usingRelay: selectedLocalType === 'relay' || selectedRemoteType === 'relay',
+          selectedRtt
         });
 
         lastStatsRef.current = {
@@ -420,8 +569,12 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
     log('WebRTC', 'Created peer connection', {
       remoteUserId,
       hasTurn: TURN_URLS.length > 0,
+      hasTurnCredentials: HAS_TURN_CREDENTIALS,
+      turnUrls: TURN_URLS,
       iceTransportPolicy: rtcConfig.iceTransportPolicy
     });
+    logTurnHealth('peer-created');
+    startIceConnectivityTimer();
 
     attachTracks(pc, stream);
 
@@ -445,6 +598,9 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
       }
 
       const candidate = event.candidate.toJSON();
+      const candidateDetails = parseCandidateDetails(candidate);
+      if (candidateDetails.type) localCandidateTypesRef.current.add(candidateDetails.type);
+      if (candidateDetails.isRelay) relayCandidateSeenRef.current.local = true;
       const key = getCandidateKey(candidate);
       if (seenLocalCandidateKeysRef.current.has(key)) {
         log('ICE', 'Skipping duplicate local candidate');
@@ -454,7 +610,14 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
 
       log('ICE', 'Local ICE candidate', {
         type: event.candidate.type,
-        protocol: event.candidate.protocol
+        protocol: event.candidate.protocol,
+        parsedType: candidateDetails.type,
+        parsedProtocol: candidateDetails.protocol,
+        address: candidateDetails.address,
+        port: candidateDetails.port,
+        tcpType: candidateDetails.tcpType,
+        isRelay: candidateDetails.isRelay,
+        raw: candidateDetails.raw
       });
 
       const payload = {
@@ -473,9 +636,11 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
 
       if (pc.connectionState === 'connected') {
         clearDisconnectTimer();
+        clearIceConnectivityTimer();
         iceRestartCountRef.current = 0;
         setCallState('connected');
         startStatsMonitor();
+        void logSelectedCandidatePair('connection-connected');
       }
 
       if (pc.connectionState === 'disconnected') {
@@ -501,7 +666,15 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
 
     pc.oniceconnectionstatechange = () => {
       log('ICE', 'iceconnectionstatechange');
+      if (pc.iceConnectionState === 'checking') {
+        logTurnHealth('ice-checking');
+      }
+      if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+        clearIceConnectivityTimer();
+        void logSelectedCandidatePair(`ice-${pc.iceConnectionState}`);
+      }
       if (pc.iceConnectionState === 'failed') {
+        logTurnHealth('ice-failed');
         void restartIce();
       }
     };
@@ -512,6 +685,9 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
 
     pc.onicegatheringstatechange = () => {
       log('ICE', 'icegatheringstatechange');
+      if (pc.iceGatheringState === 'complete') {
+        logTurnHealth('ice-gathering-complete');
+      }
     };
 
     pc.onnegotiationneeded = () => {
@@ -521,10 +697,14 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
     return pc;
   }, [
     attachTracks,
+    clearIceConnectivityTimer,
     clearDisconnectTimer,
     emitSignal,
     log,
+    logSelectedCandidatePair,
+    logTurnHealth,
     restartIce,
+    startIceConnectivityTimer,
     startStatsMonitor,
     stopStatsMonitor
   ]);
@@ -752,6 +932,20 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
         log('ICE', 'Ignoring ICE for stale call', { staleCallId: callId });
         return;
       }
+
+      const candidateDetails = parseCandidateDetails(candidate);
+      if (candidateDetails.type) remoteCandidateTypesRef.current.add(candidateDetails.type);
+      if (candidateDetails.isRelay) relayCandidateSeenRef.current.remote = true;
+      log('ICE', 'Remote ICE candidate received', {
+        senderId,
+        parsedType: candidateDetails.type,
+        parsedProtocol: candidateDetails.protocol,
+        address: candidateDetails.address,
+        port: candidateDetails.port,
+        tcpType: candidateDetails.tcpType,
+        isRelay: candidateDetails.isRelay,
+        raw: candidateDetails.raw
+      });
 
       const key = getCandidateKey(candidate);
       if (seenRemoteCandidateKeysRef.current.has(key)) {
