@@ -250,7 +250,7 @@ router.get('/history/:otherUserId', vaultAuth, async (req, res) => {
       return msgObj;
     });
 
-    res.json(decryptedMessages);
+    res.json(decryptedMessages); 
   } catch (err) {
     console.error('History Error:', err);
     res.status(500).send('Server error');
@@ -284,4 +284,5 @@ router.get('/search', vaultAuth, async (req, res) => {
 });
 
 
+    
 module.exports = router;

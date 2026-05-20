@@ -176,15 +176,16 @@ module.exports = (io) => {
     };
 
     // --- WebRTC Video Call Signaling ---
-    socket.on('call-user', async ({ receiverId, offer }) => {
+    socket.on('call-user', async ({ receiverId, offer, callId }) => {
       try {
         if (!requireVaultSignalAccess('call-user') || !receiverId || !offer) return;
         const callerAlias = await getCallerAlias();
-        console.log(`[Socket] Call initiated by ${userId} to ${receiverId}`);
+        console.log(`[Socket] Call initiated by ${userId} to ${receiverId}`, { callId });
         socket.to(`vault:${receiverId}`).emit('incoming-call', {
           callerId: userId,
           callerAlias,
-          offer
+          offer,
+          callId
         });
       } catch (err) {
         console.error('[Socket] Call Initiation Error:', err);
@@ -192,53 +193,41 @@ module.exports = (io) => {
       }
     });
 
-    socket.on('answer-call', ({ callerId, answer }) => {
+    socket.on('answer-call', ({ callerId, answer, callId }) => {
       if (!requireVaultSignalAccess('answer-call') || !callerId || !answer) return;
-      console.log(`[Socket] Call answered by ${userId} for caller ${callerId}`);
+      console.log(`[Socket] Call answered by ${userId} for caller ${callerId}`, { callId });
       socket.to(`vault:${callerId}`).emit('call-answered', {
         answererId: userId,
-        answer
-      });
-    });
-
-    socket.on('reject-call', ({ callerId }) => {
-      if (!requireVaultSignalAccess('reject-call') || !callerId) return;
-      console.log(`[Socket] Call rejected by ${userId} for caller ${callerId}`);
-      socket.to(`vault:${callerId}`).emit('call-rejected', {
-        reason: 'Call rejected'
-      });
-    });
-
-    socket.on('webrtc-offer', ({ receiverId, offer }) => {
-      if (!requireVaultSignalAccess('webrtc-offer') || !receiverId || !offer) return;
-      socket.to(`vault:${receiverId}`).emit('webrtc-offer', {
-        offer,
-        senderId: userId
-      });
-    });
-
-    socket.on('webrtc-answer', ({ callerId, answer }) => {
-      if (!requireVaultSignalAccess('webrtc-answer') || !callerId || !answer) return;
-      socket.to(`vault:${callerId}`).emit('webrtc-answer', {
         answer,
-        senderId: userId
+        callId
       });
     });
 
-    socket.on('ice-candidate', ({ receiverId, candidate }) => {
+    socket.on('reject-call', ({ callerId, callId }) => {
+      if (!requireVaultSignalAccess('reject-call') || !callerId) return;
+      console.log(`[Socket] Call rejected by ${userId} for caller ${callerId}`, { callId });
+      socket.to(`vault:${callerId}`).emit('call-rejected', {
+        reason: 'Call rejected',
+        callId
+      });
+    });
+
+    socket.on('ice-candidate', ({ receiverId, candidate, callId }) => {
       if (!requireVaultSignalAccess('ice-candidate') || !receiverId || !candidate) return;
-      console.log(`[Socket] ICE candidate from ${userId} to ${receiverId}`);
+      console.log(`[Socket] ICE candidate from ${userId} to ${receiverId}`, { callId });
       socket.to(`vault:${receiverId}`).emit('ice-candidate', {
         candidate,
-        senderId: userId
+        senderId: userId,
+        callId
       });
     });
 
-    socket.on('end-call', ({ receiverId }) => {
+    socket.on('end-call', ({ receiverId, callId }) => {
       if (!requireVaultSignalAccess('end-call') || !receiverId) return;
-      console.log(`[Socket] Call ended by ${userId} for ${receiverId}`);
+      console.log(`[Socket] Call ended by ${userId} for ${receiverId}`, { callId });
       socket.to(`vault:${receiverId}`).emit('call-ended', {
-        senderId: userId
+        senderId: userId,
+        callId
       });
     });
     // --- End WebRTC Signaling ---
