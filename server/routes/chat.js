@@ -15,17 +15,9 @@ const emitVaultMessage = async ({ io, senderId, receiverId, newMessage, plaintex
   const sender = await User.findById(senderId).select('alias').lean();
   const populatedMessage = await newMessage.populate('replyTo', 'encryptedMessage senderId');
   const msgObj = populatedMessage.toObject();
-  
-  if (msgObj.messageType === 'text') {
-    msgObj.message = plaintextMessage;
-  }
-  
+  msgObj.message = plaintextMessage;
   if (msgObj.replyTo) {
-    try {
-      msgObj.replyTo.message = decrypt(msgObj.replyTo.encryptedMessage);
-    } catch (e) {
-      msgObj.replyTo.message = "[Decryption Error]";
-    }
+    msgObj.replyTo.message = decrypt(msgObj.replyTo.encryptedMessage);
     delete msgObj.replyTo.encryptedMessage;
   }
 
@@ -39,7 +31,7 @@ const emitVaultMessage = async ({ io, senderId, receiverId, newMessage, plaintex
   return msgObj;
 };
 
-const persistMessage = async ({ senderId, receiverId, message, replyTo, messageType = 'text', fileData, fileName }) => {
+const persistMessage = async ({ senderId, receiverId, message, replyTo }) => {
   await User.bulkWrite([
     {
       updateOne: {
@@ -55,21 +47,11 @@ const persistMessage = async ({ senderId, receiverId, message, replyTo, messageT
     }
   ]);
 
-  const encryptedMessage = message ? encrypt(message) : undefined;
-  
-  let expiresAt;
-  if (messageType === 'image') {
-    expiresAt = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes TTL
-  }
-
+  const encryptedMessage = encrypt(message);
   const newMessage = new Message({
     senderId,
     receiverId,
     encryptedMessage,
-    messageType,
-    fileData,
-    fileName,
-    expiresAt,
     replyTo
   });
   await newMessage.save();
@@ -96,105 +78,37 @@ router.get('/unread-count', auth, async (req, res) => {
 // @desc    Get users you have messaged or received messages from
 router.get('/nodes', vaultAuth, async (req, res) => {
   try {
-    const currentUserId = req.vaultUser.id;
-    const currentUser = await User.findById(currentUserId)
+    const currentUser = await User.findById(req.vaultUser.id)
       .select('vaultContacts vaultNicknames')
       .lean();
 
-    // Find all active message threads for the user
+    // Find unique user IDs from messages where current user is sender or receiver
     const messages = await Message.find({
-      $and: [
-        { $or: [{ senderId: currentUserId }, { receiverId: currentUserId }] },
-        { deletedBy: { $ne: currentUserId } }
-      ]
+      $or: [{ senderId: req.vaultUser.id }, { receiverId: req.vaultUser.id }]
     })
-      .select('senderId receiverId createdAt seen')
+      .select('senderId receiverId')
       .lean()
       .sort({ createdAt: -1 });
 
-    const nodeStats = new Map();
+    const nodeIds = new Set();
+    (currentUser?.vaultContacts || []).forEach((contactId) => nodeIds.add(contactId.toString()));
 
-    // Initialize with vaultContacts (explicitly added nodes)
-    (currentUser?.vaultContacts || []).forEach((contactId) => {
-      const idStr = contactId.toString();
-      nodeStats.set(idStr, {
-        lastInteraction: new Date(0), // Default to very old
-        unreadCount: 0
-      });
-    });
-
-    // Process messages to get latest interaction and unread count
     messages.forEach(msg => {
-      const otherId = msg.senderId.toString() === currentUserId ? msg.receiverId.toString() : msg.senderId.toString();
-      
-      if (!nodeStats.has(otherId)) {
-        nodeStats.set(otherId, { lastInteraction: msg.createdAt, unreadCount: 0 });
-      }
-
-      const stats = nodeStats.get(otherId);
-      
-      // Update latest interaction time
-      if (new Date(msg.createdAt) > stats.lastInteraction) {
-        stats.lastInteraction = msg.createdAt;
-      }
-
-      // Increment unread count if message was received by current user and not seen
-      if (msg.receiverId.toString() === currentUserId && !msg.seen) {
-        stats.unreadCount++;
-      }
+      nodeIds.add(msg.senderId.toString());
+      nodeIds.add(msg.receiverId.toString());
     });
+    nodeIds.delete(req.vaultUser.id.toString());
 
-    const nodeIds = Array.from(nodeStats.keys());
-    const nodes = await User.find({ _id: { $in: nodeIds } })
+    const nodes = await User.find({ _id: { $in: Array.from(nodeIds) } })
       .select('alias fitId avatarSeed isOnline lastSeen')
       .lean();
 
-    const result = nodes.map((node) => {
-      const stats = nodeStats.get(node._id.toString());
-      return {
-        ...node,
-        nickname: getNicknameForUser(currentUser?.vaultNicknames, node._id.toString()),
-        unreadCount: stats.unreadCount,
-        lastInteraction: stats.lastInteraction
-      };
-    });
-
-    // Sort by lastInteraction (most recent first)
-    result.sort((a, b) => new Date(b.lastInteraction).getTime() - new Date(a.lastInteraction).getTime());
-
-    res.json(result);
+    res.json(nodes.map((node) => ({
+      ...node,
+      nickname: getNicknameForUser(currentUser?.vaultNicknames, node._id.toString())
+    })));
   } catch (err) {
     console.error('Nodes Error:', err);
-    res.status(500).send('Server error');
-  }
-});
-
-// @route   DELETE api/sync-center/contacts/:otherUserId
-// @desc    Remove a contact from the list and hide their history for the current user
-router.delete('/contacts/:otherUserId', vaultAuth, async (req, res) => {
-  try {
-    const currentUserId = req.vaultUser.id;
-    const otherUserId = req.params.otherUserId;
-
-    // Remove from vaultContacts
-    await User.findByIdAndUpdate(currentUserId, {
-      $pull: { vaultContacts: otherUserId }
-    });
-
-    // Mark all existing messages as deleted by this user
-    await Message.updateMany(
-      {
-        $or: [
-          { senderId: currentUserId, receiverId: otherUserId },
-          { senderId: otherUserId, receiverId: currentUserId }
-        ]
-      },
-      { $addToSet: { deletedBy: currentUserId } }
-    );
-
-    res.json({ msg: 'Contact and history removed for you' });
-  } catch (err) {
-    console.error('Delete Contact Error:', err);
     res.status(500).send('Server error');
   }
 });
@@ -243,10 +157,10 @@ router.delete('/history/:otherUserId', vaultAuth, async (req, res) => {
 router.post('/message', vaultAuth, async (req, res) => {
   try {
     const senderId = req.vaultUser.id;
-    const { receiverId, message, replyTo, messageType, fileData, fileName } = req.body;
+    const { receiverId, message, replyTo } = req.body;
     const trimmedMessage = typeof message === 'string' ? message.trim() : '';
 
-    if (!receiverId || (messageType !== 'image' && !trimmedMessage)) {
+    if (!receiverId || !trimmedMessage) {
       return res.status(400).json({ msg: 'receiverId and message are required' });
     }
 
@@ -254,9 +168,6 @@ router.post('/message', vaultAuth, async (req, res) => {
       senderId,
       receiverId,
       message: trimmedMessage,
-      messageType,
-      fileData,
-      fileName,
       replyTo
     });
 
@@ -314,40 +225,27 @@ router.patch('/contacts/:otherUserId/nickname', vaultAuth, async (req, res) => {
 // @desc    Get message history with a specific user
 router.get('/history/:otherUserId', vaultAuth, async (req, res) => {
   try {
-    const currentUserId = req.vaultUser.id;
     const messages = await Message.find({
-      $and: [
-        {
-          $or: [
-            { senderId: currentUserId, receiverId: req.params.otherUserId },
-            { senderId: req.params.otherUserId, receiverId: currentUserId }
-          ]
-        },
-        { deletedBy: { $ne: currentUserId } }
+      $or: [
+        { senderId: req.vaultUser.id, receiverId: req.params.otherUserId },
+        { senderId: req.params.otherUserId, receiverId: req.vaultUser.id }
       ]
     })
-      .select('senderId receiverId encryptedMessage messageType fileData fileName expiresAt replyTo reactions seen createdAt')
+      .select('senderId receiverId encryptedMessage replyTo reactions seen createdAt')
       .populate('replyTo', 'encryptedMessage senderId')
       .sort({ createdAt: 1 })
       .lean();
 
     const decryptedMessages = messages.map(msg => {
       const msgObj = { ...msg };
-      if (msg.messageType === 'text') {
-        try {
-          msgObj.message = decrypt(msg.encryptedMessage);
-        } catch (e) {
-          msgObj.message = "[Decryption Error]";
-        }
-      }
-      
-      if (msgObj.replyTo) {
-        try {
+      try {
+        msgObj.message = decrypt(msg.encryptedMessage);
+        if (msgObj.replyTo) {
           msgObj.replyTo.message = decrypt(msgObj.replyTo.encryptedMessage);
-        } catch (e) {
-          msgObj.replyTo.message = "[Decryption Error]";
+          delete msgObj.replyTo.encryptedMessage;
         }
-        delete msgObj.replyTo.encryptedMessage;
+      } catch (e) {
+        msgObj.message = "[Decryption Error]";
       }
       return msgObj;
     });
@@ -384,5 +282,6 @@ router.get('/search', vaultAuth, async (req, res) => {
     res.status(500).send('Server error');
   }
 });
+
 
 module.exports = router;
