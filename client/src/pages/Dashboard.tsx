@@ -1,13 +1,56 @@
-import React, { useState, useRef } from 'react';
+import React, { useMemo, useState, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Flame, Droplets, Trophy, Activity, BellRing, ChevronDown } from 'lucide-react';
 import { useVault } from '../context/VaultContext';
 
 import { useAuth } from '../context/AuthContext';
 
+const workoutPool = [
+  { title: 'Morning Yoga', min: 22, max: 38, color: 'bg-emerald-50', textColor: 'text-emerald-600' },
+  { title: 'HIIT Cardio', min: 18, max: 32, color: 'bg-blue-50', textColor: 'text-blue-600' },
+  { title: 'Lower Body Strength', min: 42, max: 64, color: 'bg-orange-50', textColor: 'text-orange-600' },
+  { title: 'Core Stability', min: 20, max: 35, color: 'bg-violet-50', textColor: 'text-violet-600' },
+  { title: 'Zone 2 Run', min: 28, max: 46, color: 'bg-sky-50', textColor: 'text-sky-600' },
+  { title: 'Mobility Flow', min: 16, max: 28, color: 'bg-teal-50', textColor: 'text-teal-600' },
+  { title: 'Upper Body Push', min: 35, max: 55, color: 'bg-rose-50', textColor: 'text-rose-600' },
+  { title: 'Evening Walk', min: 25, max: 50, color: 'bg-lime-50', textColor: 'text-lime-600' }
+];
+
+const randomInt = (min: number, max: number) => Math.floor(Math.random() * (max - min + 1)) + min;
+
+const pickWorkouts = () => {
+  const shuffled = [...workoutPool].sort(() => Math.random() - 0.5);
+  return shuffled.slice(0, 3).map((workout) => ({
+    ...workout,
+    duration: `${randomInt(workout.min, workout.max)} min`
+  }));
+};
+
+const createFitnessSnapshot = () => {
+  const steps = randomInt(4200, 12800);
+  const intensity = steps > 9500 ? 'high' : steps > 6500 ? 'moderate' : 'light';
+  const calories = randomInt(
+    intensity === 'high' ? 1450 : intensity === 'moderate' ? 1050 : 720,
+    intensity === 'high' ? 2350 : intensity === 'moderate' ? 1750 : 1250
+  );
+  const water = (randomInt(9, intensity === 'high' ? 24 : 19) / 10).toFixed(1);
+  const streak = randomInt(3, 28);
+  const weeklyProgress = Math.min(96, Math.max(28, Math.round((steps / 12000) * 70 + randomInt(8, 22))));
+
+  return {
+    calories: calories.toLocaleString(),
+    water,
+    streak: streak.toString(),
+    steps: steps.toLocaleString(),
+    weeklyProgress,
+    workouts: pickWorkouts()
+  };
+};
+
 const Dashboard: React.FC = () => {
   const { user, unreadCount, latestWorkoutAlert } = useAuth();
   const { enterVaultMode } = useVault();
+  const fitnessSnapshot = useMemo(() => createFitnessSnapshot(), []);
   const [dragY, setDragY] = useState(0);
   const [isHolding, setIsHolding] = useState(false);
   const startY = useRef(0);
@@ -112,10 +155,10 @@ const Dashboard: React.FC = () => {
 
       {/* Main Stats */}
       <div className="grid grid-cols-2 gap-4">
-        <StatCard icon={<Flame className="text-orange-500" />} label="Calories" value="1,240" unit="kcal" />
-        <StatCard icon={<Droplets className="text-blue-500" />} label="Water" value="1.5" unit="liters" />
-        <StatCard icon={<Trophy className="text-yellow-500" />} label="Streak" value="12" unit="days" />
-        <StatCard icon={<Activity className="text-fitness-primary" />} label="Steps" value="8,432" unit="steps" />
+        <StatCard icon={<Flame className="text-orange-500" />} label="Calories" value={fitnessSnapshot.calories} unit="kcal" />
+        <StatCard icon={<Droplets className="text-blue-500" />} label="Water" value={fitnessSnapshot.water} unit="liters" />
+        <StatCard icon={<Trophy className="text-yellow-500" />} label="Streak" value={fitnessSnapshot.streak} unit="days" />
+        <StatCard icon={<Activity className="text-fitness-primary" />} label="Steps" value={fitnessSnapshot.steps} unit="steps" />
       </div>
 
       {/* Daily Progress */}
@@ -125,20 +168,26 @@ const Dashboard: React.FC = () => {
           <motion.div 
             className="h-full bg-fitness-primary"
             initial={{ width: 0 }}
-            animate={{ width: '65%' }}
+            animate={{ width: `${fitnessSnapshot.weeklyProgress}%` }}
             transition={{ duration: 1 }}
           />
         </div>
-        <p className="text-sm text-slate-500 mt-2 text-right">65% of weekly goal achieved</p>
+        <p className="text-sm text-slate-500 mt-2 text-right">{fitnessSnapshot.weeklyProgress}% of weekly goal achieved</p>
       </div>
 
       {/* Recent Workouts */}
       <div>
         <h3 className="font-bold mb-4">Recent Workouts</h3>
         <div className="space-y-3">
-          <WorkoutItem title="Morning Yoga" duration="30 min" color="bg-emerald-50" textColor="text-emerald-600" />
-          <WorkoutItem title="HIIT Cardio" duration="45 min" color="bg-blue-50" textColor="text-blue-600" />
-          <WorkoutItem title="Lower Body Strength" duration="60 min" color="bg-orange-50" textColor="text-orange-600" />
+          {fitnessSnapshot.workouts.map((workout) => (
+            <WorkoutItem
+              key={workout.title}
+              title={workout.title}
+              duration={workout.duration}
+              color={workout.color}
+              textColor={workout.textColor}
+            />
+          ))}
         </div>
       </div>
     </div>

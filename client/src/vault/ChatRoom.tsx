@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Socket } from 'socket.io-client';
 import { useAuth } from '../context/AuthContext';
-import { Send, Loader2, User, Check, CheckCheck, CornerUpLeft, X, Trash2, ChevronLeft, Pencil, Download, Paperclip, Video } from 'lucide-react';
+import { Send, Loader2, User, Check, CheckCheck, CornerUpLeft, X, Trash2, ChevronLeft, Pencil, Download, Paperclip, Video, Palette } from 'lucide-react';
 import axios from 'axios';
 import { motion, AnimatePresence } from 'framer-motion';
 import { buildApiUrl, getVaultSocket, releaseVaultSocket } from '../runtimeConfig';
@@ -24,6 +24,77 @@ interface Message {
   };
   reactions: Array<{ userId: string; emoji: string }>;
 }
+
+const CHAT_THEMES = {
+  matrix: {
+    label: 'Matrix',
+    shell: 'bg-vault-bg',
+    header: 'bg-black/30 border-emerald-400/10',
+    panel: 'bg-black/45',
+    accent: 'text-fitness-primary',
+    sent: 'bg-emerald-300 text-black',
+    received: 'bg-white/7 border border-white/10 text-white',
+    input: 'bg-black/35 border-white/10 focus:border-emerald-300/40',
+    chip: 'bg-emerald-400'
+  },
+  midnight: {
+    label: 'Midnight',
+    shell: 'bg-slate-950',
+    header: 'bg-slate-950/80 border-blue-300/10',
+    panel: 'bg-slate-950/70',
+    accent: 'text-blue-300',
+    sent: 'bg-blue-300 text-slate-950',
+    received: 'bg-slate-800/80 border border-blue-200/10 text-white',
+    input: 'bg-slate-900/80 border-blue-200/10 focus:border-blue-300/40',
+    chip: 'bg-blue-300'
+  },
+  ember: {
+    label: 'Ember',
+    shell: 'bg-stone-950',
+    header: 'bg-stone-950/80 border-orange-300/10',
+    panel: 'bg-stone-950/70',
+    accent: 'text-orange-300',
+    sent: 'bg-orange-300 text-stone-950',
+    received: 'bg-stone-800/80 border border-orange-200/10 text-white',
+    input: 'bg-stone-900/80 border-orange-200/10 focus:border-orange-300/40',
+    chip: 'bg-orange-300'
+  },
+  ocean: {
+    label: 'Ocean',
+    shell: 'bg-cyan-950',
+    header: 'bg-cyan-950/80 border-cyan-200/10',
+    panel: 'bg-cyan-950/70',
+    accent: 'text-cyan-200',
+    sent: 'bg-cyan-200 text-cyan-950',
+    received: 'bg-cyan-900/70 border border-cyan-100/10 text-white',
+    input: 'bg-cyan-950/70 border-cyan-100/10 focus:border-cyan-200/40',
+    chip: 'bg-cyan-200'
+  },
+  violet: {
+    label: 'Violet',
+    shell: 'bg-zinc-950',
+    header: 'bg-zinc-950/80 border-violet-300/10',
+    panel: 'bg-zinc-950/70',
+    accent: 'text-violet-300',
+    sent: 'bg-violet-300 text-zinc-950',
+    received: 'bg-zinc-800/80 border border-violet-200/10 text-white',
+    input: 'bg-zinc-900/80 border-violet-200/10 focus:border-violet-300/40',
+    chip: 'bg-violet-300'
+  },
+  rose: {
+    label: 'Rose',
+    shell: 'bg-neutral-950',
+    header: 'bg-neutral-950/80 border-rose-300/10',
+    panel: 'bg-neutral-950/70',
+    accent: 'text-rose-300',
+    sent: 'bg-rose-300 text-neutral-950',
+    received: 'bg-neutral-800/80 border border-rose-200/10 text-white',
+    input: 'bg-neutral-900/80 border-rose-200/10 focus:border-rose-300/40',
+    chip: 'bg-rose-300'
+  }
+} as const;
+
+type ChatThemeId = keyof typeof CHAT_THEMES;
 
 const ChatRoom: React.FC<{
   receiverId: string,
@@ -48,6 +119,9 @@ const ChatRoom: React.FC<{
   const [isConfirmingClear, setIsConfirmingClear] = useState(false);
   const [isSavingNickname, setIsSavingNickname] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
+  const [themeId, setThemeId] = useState<ChatThemeId>('matrix');
+  const [isThemePanelOpen, setIsThemePanelOpen] = useState(false);
+  const [isSavingTheme, setIsSavingTheme] = useState(false);
 
   const socketRef = useRef<Socket | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -65,10 +139,18 @@ const ChatRoom: React.FC<{
 
     const fetchHistory = async () => {
       try {
-        const res = await axios.get(buildApiUrl(`/api/sync-center/history/${receiverId}`), {
-          headers: { 'x-vault-token': vaultToken }
-        });
-        setMessages(res.data);
+        const [historyRes, themeRes] = await Promise.all([
+          axios.get(buildApiUrl(`/api/sync-center/history/${receiverId}`), {
+            headers: { 'x-vault-token': vaultToken }
+          }),
+          axios.get(buildApiUrl(`/api/sync-center/contacts/${receiverId}/theme`), {
+            headers: { 'x-vault-token': vaultToken }
+          })
+        ]);
+        setMessages(historyRes.data);
+        if (themeRes.data.themeId && themeRes.data.themeId in CHAT_THEMES) {
+          setThemeId(themeRes.data.themeId);
+        }
         socket.emit('markSeen', { senderId: receiverId });
         await refreshUnreadCount();
       } catch (err) {
@@ -110,17 +192,25 @@ const ChatRoom: React.FC<{
       if (userId === receiverId) setIsPeerOnline(isOnline);
     };
 
+    const handleThemeUpdated = ({ userIds, themeId: nextThemeId }: { userIds: string[], themeId: ChatThemeId }) => {
+      if (userIds?.includes(receiverId) && userIds?.includes(user?.id || '') && nextThemeId in CHAT_THEMES) {
+        setThemeId(nextThemeId);
+      }
+    };
+
     socket.off('message', handleMessage);
     socket.off('reactionUpdate', handleReactionUpdate);
     socket.off('messagesSeen', handleMessagesSeen);
     socket.off('typing', handleTypingEvent);
     socket.off('userStatus', handleUserStatus);
+    socket.off('chatThemeUpdated', handleThemeUpdated);
 
     socket.on('message', handleMessage);
     socket.on('reactionUpdate', handleReactionUpdate);
     socket.on('messagesSeen', handleMessagesSeen);
     socket.on('typing', handleTypingEvent);
     socket.on('userStatus', handleUserStatus);
+    socket.on('chatThemeUpdated', handleThemeUpdated);
 
     return () => {
       socket.off('message', handleMessage);
@@ -128,6 +218,7 @@ const ChatRoom: React.FC<{
       socket.off('messagesSeen', handleMessagesSeen);
       socket.off('typing', handleTypingEvent);
       socket.off('userStatus', handleUserStatus);
+      socket.off('chatThemeUpdated', handleThemeUpdated);
       releaseVaultSocket(socket);
       socketRef.current = null;
     };
@@ -315,14 +406,32 @@ const ChatRoom: React.FC<{
     await saveNickname('');
   };
 
+  const saveTheme = async (nextThemeId: ChatThemeId) => {
+    setThemeId(nextThemeId);
+    setIsSavingTheme(true);
+    try {
+      await axios.patch(
+        buildApiUrl(`/api/sync-center/contacts/${receiverId}/theme`),
+        { themeId: nextThemeId },
+        { headers: { 'x-vault-token': vaultToken } }
+      );
+    } catch (err) {
+      console.error('Theme Update Error:', err);
+      window.alert('Failed to update chat theme. Please try again.');
+    } finally {
+      setIsSavingTheme(false);
+    }
+  };
+
   if (loading) return <div className="h-full flex items-center justify-center"><Loader2 className="animate-spin text-white/20" /></div>;
 
   const displayName = nickname || receiverAlias;
+  const theme = CHAT_THEMES[themeId];
 
   return (
-    <div className="flex flex-col h-full bg-vault-bg text-white font-sans overflow-hidden">
+    <div className={`flex flex-col h-full text-white font-sans overflow-hidden ${theme.shell}`}>
       {/* Header */}
-      <div className="border-b border-white/5 bg-black/20 backdrop-blur-md">
+      <div className={`border-b backdrop-blur-md ${theme.header}`}>
         <div className="flex items-center gap-3 p-4">
         <button
           type="button"
@@ -342,7 +451,7 @@ const ChatRoom: React.FC<{
           <div className="truncate font-mono text-sm">{displayName}</div>
           <div className="text-[10px] uppercase tracking-tighter">
             {isPeerTyping ? (
-              <span className="text-fitness-primary animate-pulse">Typing...</span>
+              <span className={`${theme.accent} animate-pulse`}>Typing...</span>
             ) : nickname ? (
               <span className="truncate text-white/30">Alias: {receiverAlias}</span>
             ) : (
@@ -361,7 +470,21 @@ const ChatRoom: React.FC<{
         <button
           type="button"
           onClick={() => {
+            setIsEditingNickname(false);
             setIsConfirmingClear(false);
+            setIsThemePanelOpen((prev) => !prev);
+          }}
+          disabled={isSavingTheme}
+          className="ml-2 flex h-10 w-10 items-center justify-center rounded-full border border-white/10 bg-white/5 text-white/40 transition-colors hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+          aria-label="Chat theme"
+        >
+          {isSavingTheme ? <Loader2 size={16} className="animate-spin" /> : <Palette size={16} />}
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setIsConfirmingClear(false);
+            setIsThemePanelOpen(false);
             setIsEditingNickname((prev) => !prev);
           }}
           disabled={isSavingNickname}
@@ -374,6 +497,7 @@ const ChatRoom: React.FC<{
           type="button"
           onClick={() => {
             setIsEditingNickname(false);
+            setIsThemePanelOpen(false);
             setIsConfirmingClear((prev) => !prev);
           }}
           disabled={isClearingChat}
@@ -436,6 +560,41 @@ const ChatRoom: React.FC<{
                     Cancel
                   </button>
                 </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        <AnimatePresence initial={false}>
+          {isThemePanelOpen && (
+            <motion.div
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: 'auto', opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              className="overflow-hidden border-t border-white/5 px-4 pb-4"
+            >
+              <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                <div className="mb-3 text-[10px] uppercase tracking-[0.2em] text-white/30">
+                  Shared chat theme
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  {(Object.entries(CHAT_THEMES) as Array<[ChatThemeId, typeof CHAT_THEMES[ChatThemeId]]>).map(([id, item]) => (
+                    <button
+                      key={id}
+                      type="button"
+                      onClick={() => saveTheme(id)}
+                      className={`rounded-2xl border p-3 text-left transition-all ${
+                        themeId === id ? 'border-white/60 bg-white/15' : 'border-white/10 bg-black/20'
+                      }`}
+                    >
+                      <span className={`mb-2 block h-6 w-6 rounded-full ${item.chip}`} />
+                      <span className="block text-[10px] font-bold uppercase tracking-widest text-white/70">{item.label}</span>
+                    </button>
+                  ))}
+                </div>
+                <p className="mt-3 text-[10px] uppercase tracking-[0.15em] text-white/25">
+                  Changes apply for both users in this chat.
+                </p>
               </div>
             </motion.div>
           )}
@@ -523,8 +682,8 @@ const ChatRoom: React.FC<{
                 }}
                 className={`max-w-[85vw] p-1 rounded-2xl text-sm relative z-10 cursor-grab active:cursor-grabbing ${
                   msg.senderId === user?.id 
-                    ? 'bg-white text-black rounded-tr-none self-end' 
-                    : 'bg-white/5 border border-white/10 rounded-tl-none self-start'
+                    ? `${theme.sent} rounded-tr-none self-end shadow-lg shadow-black/10` 
+                    : `${theme.received} rounded-tl-none self-start`
                 }`}
               >
                 {msg.messageType === 'image' ? (
@@ -604,7 +763,7 @@ const ChatRoom: React.FC<{
         ))}
         {isPeerTyping && (
           <div className="flex justify-start">
-            <div className="bg-white/5 border border-white/10 p-2 px-3 rounded-2xl rounded-tl-none flex gap-1">
+            <div className={`${theme.received} p-2 px-3 rounded-2xl rounded-tl-none flex gap-1`}>
               <span className="w-1 h-1 bg-white/40 rounded-full animate-bounce" />
               <span className="w-1 h-1 bg-white/40 rounded-full animate-bounce [animation-delay:0.2s]" />
               <span className="w-1 h-1 bg-white/40 rounded-full animate-bounce [animation-delay:0.4s]" />
@@ -620,7 +779,7 @@ const ChatRoom: React.FC<{
       </div>
 
       {/* Input */}
-      <div className="p-4 bg-black/40 backdrop-blur-xl border-t border-white/5 space-y-2">
+      <div className={`p-4 backdrop-blur-xl border-t border-white/5 space-y-2 ${theme.panel}`}>
         <AnimatePresence>
           {replyingTo && (
             <motion.div 
@@ -656,7 +815,7 @@ const ChatRoom: React.FC<{
             value={newMessage}
             onChange={handleTyping}
             placeholder="Transmit encrypted data..."
-            className="flex-1 bg-white/5 border border-white/10 rounded-full px-4 py-3 text-sm focus:outline-none focus:border-white/20 transition-colors"
+            className={`flex-1 border rounded-full px-4 py-3 text-sm text-white placeholder:text-white/25 focus:outline-none transition-colors ${theme.input}`}
           />
           <button 
             type="submit" 

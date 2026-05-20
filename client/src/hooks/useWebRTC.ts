@@ -590,7 +590,6 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
       remoteStreamRef.current = inboundStream;
       setRemoteStream(inboundStream);
     };
-
     pc.onicecandidate = (event) => {
       if (!event.candidate) {
         log('ICE', 'ICE gathering complete');

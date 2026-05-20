@@ -22,6 +22,7 @@ interface AuthContextType {
   token: string | null;
   vaultToken: string | null;
   login: (token: string, user: User) => void;
+  updateUser: (user: User) => void;
   logout: () => void;
   setVaultToken: (token: string | null) => void;
   isAuthenticated: boolean;
@@ -100,6 +101,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     localStorage.setItem('user', JSON.stringify(newUser));
   };
 
+  const updateUser = (nextUser: User) => {
+    setUser(nextUser);
+    localStorage.setItem('user', JSON.stringify(nextUser));
+  };
+
   const logout = () => {
     setToken(null);
     setUser(null);
@@ -130,6 +136,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       token, 
       vaultToken, 
       login, 
+      updateUser,
       logout, 
       setVaultToken,
       isAuthenticated: !!token,

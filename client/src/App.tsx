@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { VaultProvider, useVault } from './context/VaultContext';
@@ -8,21 +8,162 @@ import Dashboard from './pages/Dashboard';
 import VaultUnlock from './components/VaultUnlock';
 import AuthPage from './pages/AuthPage';
 import VaultPage from './vault/VaultPage';
-import { Copy, Check } from 'lucide-react';
+import { Copy, Check, Clock, Dumbbell, Flame, TrendingUp } from 'lucide-react';
+import axios from 'axios';
+import { buildApiUrl } from './runtimeConfig';
 
-// Placeholder Pages
-const Workouts = () => <div className="p-4">Workout Plans</div>;
+const randomInt = (min: number, max: number) => Math.floor(Math.random() * (max - min + 1)) + min;
+
+const workoutPlans = [
+  { title: 'Full Body Circuit', focus: 'Strength + cardio', difficulty: 'Medium', tone: 'emerald' },
+  { title: 'Push Day Builder', focus: 'Chest, shoulders, triceps', difficulty: 'Hard', tone: 'rose' },
+  { title: 'Mobility Reset', focus: 'Hips, spine, shoulders', difficulty: 'Easy', tone: 'sky' },
+  { title: 'Lower Body Power', focus: 'Glutes, quads, core', difficulty: 'Hard', tone: 'orange' },
+  { title: 'Zone 2 Endurance', focus: 'Steady cardio base', difficulty: 'Medium', tone: 'blue' },
+  { title: 'Core Control', focus: 'Abs and stability', difficulty: 'Medium', tone: 'violet' },
+  { title: 'Active Recovery', focus: 'Light movement', difficulty: 'Easy', tone: 'teal' }
+];
+
+const toneClasses: Record<string, { card: string; icon: string; text: string }> = {
+  emerald: { card: 'bg-emerald-50', icon: 'bg-emerald-100 text-emerald-600', text: 'text-emerald-600' },
+  rose: { card: 'bg-rose-50', icon: 'bg-rose-100 text-rose-600', text: 'text-rose-600' },
+  sky: { card: 'bg-sky-50', icon: 'bg-sky-100 text-sky-600', text: 'text-sky-600' },
+  orange: { card: 'bg-orange-50', icon: 'bg-orange-100 text-orange-600', text: 'text-orange-600' },
+  blue: { card: 'bg-blue-50', icon: 'bg-blue-100 text-blue-600', text: 'text-blue-600' },
+  violet: { card: 'bg-violet-50', icon: 'bg-violet-100 text-violet-600', text: 'text-violet-600' },
+  teal: { card: 'bg-teal-50', icon: 'bg-teal-100 text-teal-600', text: 'text-teal-600' }
+};
+
+const createWorkoutPage = () => {
+  const shuffled = [...workoutPlans].sort(() => Math.random() - 0.5);
+  const selected = shuffled.slice(0, 4).map((plan, index) => ({
+    ...plan,
+    duration: randomInt(plan.difficulty === 'Hard' ? 38 : 22, plan.difficulty === 'Easy' ? 34 : 58),
+    calories: randomInt(plan.difficulty === 'Hard' ? 320 : 140, plan.difficulty === 'Easy' ? 240 : 430),
+    sets: randomInt(3, 5),
+    isRecommended: index === 0
+  }));
+
+  return {
+    readiness: randomInt(68, 96),
+    activeMinutes: selected.reduce((sum, item) => sum + item.duration, 0),
+    selected
+  };
+};
+
+const Workouts = () => {
+  const plan = useMemo(() => createWorkoutPage(), []);
+
+  return (
+    <div className="space-y-5">
+      <div className="rounded-3xl bg-white p-5 shadow-sm border border-slate-100">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-xs font-black uppercase tracking-[0.2em] text-fitness-primary">Today's Plan</p>
+            <h2 className="mt-1 text-2xl font-bold text-slate-800">Adaptive workouts</h2>
+          </div>
+          <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-fitness-primary/10 text-fitness-primary">
+            <TrendingUp size={22} />
+          </div>
+        </div>
+        <div className="mt-5 grid grid-cols-2 gap-3">
+          <div className="rounded-2xl bg-slate-50 p-4">
+            <div className="text-xs font-bold uppercase text-slate-400">Readiness</div>
+            <div className="mt-1 text-2xl font-black text-slate-800">{plan.readiness}%</div>
+          </div>
+          <div className="rounded-2xl bg-slate-50 p-4">
+            <div className="text-xs font-bold uppercase text-slate-400">Minutes</div>
+            <div className="mt-1 text-2xl font-black text-slate-800">{plan.activeMinutes}</div>
+          </div>
+        </div>
+      </div>
+
+      <div className="space-y-3">
+        {plan.selected.map((workout) => {
+          const tone = toneClasses[workout.tone];
+          return (
+            <div key={workout.title} className={`rounded-2xl border border-white p-4 shadow-sm ${tone.card}`}>
+              <div className="flex items-start gap-4">
+                <div className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl ${tone.icon}`}>
+                  <Dumbbell size={20} />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <h3 className="font-bold text-slate-800">{workout.title}</h3>
+                    {workout.isRecommended && (
+                      <span className="rounded-full bg-white px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-slate-500">
+                        Best
+                      </span>
+                    )}
+                  </div>
+                  <p className="mt-1 text-sm text-slate-500">{workout.focus}</p>
+                  <div className="mt-3 flex flex-wrap gap-3 text-xs font-bold text-slate-500">
+                    <span className="flex items-center gap-1"><Clock size={14} /> {workout.duration} min</span>
+                    <span className="flex items-center gap-1"><Flame size={14} /> {workout.calories} kcal</span>
+                    <span className={tone.text}>{workout.sets} blocks</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+};
+
 const Stats = () => <div className="p-4">Fitness Statistics</div>;
 
 const Profile = () => {
-  const { user, logout, unreadCount } = useAuth();
+  const { user, token, logout, unreadCount, updateUser } = useAuth();
   const [copied, setCopied] = useState(false);
+  const [usernameDraft, setUsernameDraft] = useState(user?.username || '');
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [savingProfile, setSavingProfile] = useState(false);
+  const [savingPassword, setSavingPassword] = useState(false);
 
   const copyFitId = () => {
     if (user?.fitId) {
       navigator.clipboard.writeText(user.fitId);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
+  const saveUsername = async () => {
+    if (!token) return;
+    setSavingProfile(true);
+    try {
+      const res = await axios.patch(
+        buildApiUrl('/api/auth/profile'),
+        { username: usernameDraft },
+        { headers: { 'x-auth-token': token } }
+      );
+      updateUser(res.data.user);
+    } catch (err: any) {
+      window.alert(err.response?.data?.msg || 'Failed to update username');
+    } finally {
+      setSavingProfile(false);
+    }
+  };
+
+  const savePassword = async () => {
+    if (!token) return;
+    setSavingPassword(true);
+    try {
+      await axios.patch(
+        buildApiUrl('/api/auth/password'),
+        { currentPassword, newPassword },
+        { headers: { 'x-auth-token': token } }
+      );
+      setCurrentPassword('');
+      setNewPassword('');
+      window.alert('Password updated');
+    } catch (err: any) {
+      window.alert(err.response?.data?.msg || 'Failed to update password');
+    } finally {
+      setSavingPassword(false);
     }
   };
 
@@ -69,11 +210,52 @@ const Profile = () => {
 
       <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-100 space-y-4">
         <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest">Settings</h3>
-        <div className="flex items-center justify-between py-2 border-b border-slate-50">
-          <span className="text-sm font-semibold text-slate-600">Dark Mode</span>
-          <div className="w-10 h-5 bg-slate-200 rounded-full"></div>
+        <div className="space-y-3 border-b border-slate-50 pb-4">
+          <label className="text-sm font-semibold text-slate-600">Username</label>
+          <div className="flex gap-2">
+            <input
+              value={usernameDraft}
+              onChange={(e) => setUsernameDraft(e.target.value)}
+              className="min-w-0 flex-1 rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3 text-sm text-slate-700 outline-none focus:border-fitness-primary"
+            />
+            <button
+              type="button"
+              onClick={saveUsername}
+              disabled={savingProfile || usernameDraft.trim() === user?.username}
+              className="rounded-2xl bg-fitness-primary px-4 py-3 text-xs font-bold uppercase tracking-widest text-white disabled:opacity-40"
+            >
+              {savingProfile ? 'Saving' : 'Save'}
+            </button>
+          </div>
         </div>
-        <div className="flex items-center justify-between py-2 border-b border-slate-50">
+        <div className="space-y-3 border-b border-slate-50 pb-4">
+          <label className="text-sm font-semibold text-slate-600">Change Password</label>
+          <div className="space-y-2">
+            <input
+              type="password"
+              value={currentPassword}
+              onChange={(e) => setCurrentPassword(e.target.value)}
+              placeholder="Current password"
+              className="w-full rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3 text-sm text-slate-700 outline-none focus:border-fitness-primary"
+            />
+            <input
+              type="password"
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
+              placeholder="New password"
+              className="w-full rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3 text-sm text-slate-700 outline-none focus:border-fitness-primary"
+            />
+            <button
+              type="button"
+              onClick={savePassword}
+              disabled={savingPassword || !currentPassword || newPassword.length < 6}
+              className="w-full rounded-2xl bg-slate-900 px-4 py-3 text-xs font-bold uppercase tracking-widest text-white disabled:opacity-40"
+            >
+              {savingPassword ? 'Updating...' : 'Update Password'}
+            </button>
+          </div>
+        </div>
+        <div className="flex items-center justify-between py-2">
           <span className="text-sm font-semibold text-slate-600">Health Sync</span>
           <div className="w-10 h-5 bg-fitness-primary rounded-full flex items-center justify-end px-1">
             <div className="w-3 h-3 bg-white rounded-full"></div>

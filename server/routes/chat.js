@@ -2,13 +2,24 @@ const express = require('express');
 const router = express.Router();
 const Message = require('../models/Message');
 const User = require('../models/User');
+const ChatTheme = require('../models/ChatTheme');
 const { auth, vaultAuth } = require('../middleware/auth');
 const { encrypt, decrypt } = require('../utils/encryption');
+
+const CHAT_THEMES = new Set(['matrix', 'midnight', 'ember', 'ocean', 'violet', 'rose']);
+
+const getParticipantsKey = (userA, userB) => [userA.toString(), userB.toString()].sort().join(':');
 
 const getNicknameForUser = (nicknameMap, userId) => {
   if (!nicknameMap) return null;
   if (typeof nicknameMap.get === 'function') return nicknameMap.get(userId) || null;
   return nicknameMap[userId] || null;
+};
+
+const getSharedTheme = async (userA, userB) => {
+  const participantsKey = getParticipantsKey(userA, userB);
+  const theme = await ChatTheme.findOne({ participantsKey }).lean();
+  return theme?.themeId || 'matrix';
 };
 
 const emitVaultMessage = async ({ io, senderId, receiverId, newMessage, plaintextMessage }) => {
@@ -217,6 +228,56 @@ router.patch('/contacts/:otherUserId/nickname', vaultAuth, async (req, res) => {
     res.json({ nickname: trimmedNickname || null });
   } catch (err) {
     console.error('Nickname Update Error:', err);
+    res.status(500).send('Server error');
+  }
+});
+
+// @route   GET api/sync-center/contacts/:otherUserId/theme
+// @desc    Get shared chat theme for a DM
+router.get('/contacts/:otherUserId/theme', vaultAuth, async (req, res) => {
+  try {
+    const currentUserId = req.vaultUser.id;
+    const otherUserId = req.params.otherUserId;
+    const themeId = await getSharedTheme(currentUserId, otherUserId);
+    res.json({ themeId });
+  } catch (err) {
+    console.error('Theme Fetch Error:', err);
+    res.status(500).send('Server error');
+  }
+});
+
+// @route   PATCH api/sync-center/contacts/:otherUserId/theme
+// @desc    Set shared chat theme for both DM participants
+router.patch('/contacts/:otherUserId/theme', vaultAuth, async (req, res) => {
+  try {
+    const currentUserId = req.vaultUser.id;
+    const otherUserId = req.params.otherUserId;
+    const themeId = (req.body.themeId || '').trim();
+
+    if (!CHAT_THEMES.has(themeId)) {
+      return res.status(400).json({ msg: 'Invalid chat theme' });
+    }
+
+    const participantsKey = getParticipantsKey(currentUserId, otherUserId);
+    const participants = participantsKey.split(':');
+    const theme = await ChatTheme.findOneAndUpdate(
+      { participantsKey },
+      { participants, themeId, updatedBy: currentUserId },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    ).lean();
+
+    req.app.get('io')
+      .to(`vault:${currentUserId}`)
+      .to(`vault:${otherUserId}`)
+      .emit('chatThemeUpdated', {
+        userIds: participants,
+        themeId: theme.themeId,
+        updatedBy: currentUserId
+      });
+
+    res.json({ themeId: theme.themeId });
+  } catch (err) {
+    console.error('Theme Update Error:', err);
     res.status(500).send('Server error');
   }
 });
