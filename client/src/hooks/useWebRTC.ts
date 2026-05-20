@@ -58,6 +58,9 @@ const createCallId = () => {
 const getCandidateKey = (candidate: RTCIceCandidateInit) =>
   candidate.candidate || `${candidate.sdpMid || ''}:${candidate.sdpMLineIndex ?? ''}`;
 
+const hasCallId = (callId: unknown): callId is string =>
+  typeof callId === 'string' && callId.trim().length > 0;
+
 export const useWebRTC = (socket: Socket | null, _userId: string | undefined) => {
   const [callState, setCallState] = useState<CallState>('idle');
   const [callerInfo, setCallerInfo] = useState<IncomingCall | null>(null);
@@ -196,6 +199,11 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
 
   const emitSignal = useCallback((event: string, payload: Record<string, unknown>) => {
     const activeSocket = socketRef.current;
+    if (!hasCallId(payload.callId)) {
+      log('Signaling', 'Refusing to emit signal without callId', { event });
+      return false;
+    }
+
     if (!activeSocket?.connected) {
       log('Signaling', 'Socket unavailable for signal', { event });
       return false;
@@ -626,6 +634,12 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
 
   const rejectCall = useCallback((callerId: string) => {
     const activeCallId = callIdRef.current || callerInfo?.callId || null;
+    if (!hasCallId(activeCallId)) {
+      log('Signaling', 'Cannot reject call without callId', { callerId });
+      resetCall('rejected', 'rejected');
+      scheduleIdleReset(null);
+      return;
+    }
     emitSignal('reject-call', { callerId, callId: activeCallId });
     resetCall('rejected', 'rejected');
     scheduleIdleReset(activeCallId);
@@ -634,6 +648,11 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
   const endCall = useCallback(() => {
     const activeCallId = callIdRef.current || callerInfo?.callId || null;
     const receiverId = targetUserIdRef.current || callerInfo?.id;
+    if (!hasCallId(activeCallId)) {
+      log('Signaling', 'Ending local call without emitting because callId is missing', { receiverId });
+      resetCall('idle', 'manual');
+      return;
+    }
     if (receiverId) {
       emitSignal('end-call', { receiverId, callId: activeCallId });
     }
@@ -650,7 +669,13 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
       callId?: string;
       iceRestart?: boolean;
     }) => {
-      const activeCallId = callId || createCallId();
+      if (!hasCallId(callId)) {
+        log('Signaling', 'Ignoring incoming-call without callId', { callerId });
+        socket.emit('reject-call', { callerId, callId });
+        return;
+      }
+
+      const activeCallId = callId;
       log('Signaling', 'incoming-call', { callerId, callerAlias, callId: activeCallId, iceRestart });
 
       if (iceRestart || callIdRef.current === activeCallId) {
@@ -683,7 +708,14 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
       log('Signaling', 'call-answered', { answererId, callId });
       const pc = peerRef.current;
       if (!pc) return;
-      if (callIdRef.current && callId && callIdRef.current !== callId) return;
+      if (!hasCallId(callId)) {
+        log('Signaling', 'Ignoring call-answered without callId', { answererId });
+        return;
+      }
+      if (callIdRef.current !== callId) {
+        log('Signaling', 'Ignoring call-answered for stale callId', { receivedCallId: callId });
+        return;
+      }
 
       if (pc.signalingState !== 'have-local-offer') {
         log('Signaling', 'Ignoring answer in wrong signaling state');
@@ -707,12 +739,16 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
       callId?: string;
     }) => {
       if (!candidate) return;
+      if (!hasCallId(callId)) {
+        log('ICE', 'Ignoring ICE candidate without callId', { senderId });
+        return;
+      }
       if (targetUserIdRef.current && targetUserIdRef.current !== senderId) {
         log('ICE', 'Ignoring ICE from unexpected sender', { senderId });
         return;
       }
 
-      if (callIdRef.current && callId && callIdRef.current !== callId) {
+      if (callIdRef.current !== callId) {
         log('ICE', 'Ignoring ICE for stale call', { staleCallId: callId });
         return;
       }
@@ -740,7 +776,11 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
     };
 
     const handleCallRejected = ({ callId }: { callId?: string } = {}) => {
-      if (callIdRef.current && callId && callIdRef.current !== callId) return;
+      if (!hasCallId(callId)) {
+        log('Signaling', 'Ignoring call-rejected without callId');
+        return;
+      }
+      if (callIdRef.current !== callId) return;
       const activeCallId = callIdRef.current;
       log('Signaling', 'call-rejected');
       resetCall('rejected', 'rejected');
@@ -748,7 +788,11 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
     };
 
     const handleCallEnded = ({ callId }: { callId?: string } = {}) => {
-      if (callIdRef.current && callId && callIdRef.current !== callId) return;
+      if (!hasCallId(callId)) {
+        log('Signaling', 'Ignoring call-ended without callId');
+        return;
+      }
+      if (callIdRef.current !== callId) return;
       const activeCallId = callIdRef.current;
       log('Signaling', 'call-ended');
       resetCall('ended', 'ended');

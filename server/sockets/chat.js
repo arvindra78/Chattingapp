@@ -162,6 +162,66 @@ module.exports = (io) => {
       socket.to(`vault:${receiverId}`).emit('typing', { senderId: userId, isTyping });
     });
 
+    const logSignal = (scope, eventName, payload = {}) => {
+      console.log(`[${scope}] ${eventName}`, {
+        senderId: userId,
+        receiverId: payload.receiverId || payload.callerId,
+        callId: payload.callId,
+        socketId: socket.id,
+        timestamp: new Date().toISOString()
+      });
+    };
+
+    const rejectSignal = (eventName, reason, payload = {}) => {
+      console.warn('[Validation] Rejected signaling payload', {
+        event: eventName,
+        reason,
+        senderId: userId,
+        receiverId: payload.receiverId || payload.callerId,
+        callId: payload.callId,
+        socketId: socket.id,
+        timestamp: new Date().toISOString()
+      });
+      socket.emit('call-error', { event: eventName, reason, callId: payload.callId });
+      return false;
+    };
+
+    const isNonEmptyString = (value) => typeof value === 'string' && value.trim().length > 0;
+
+    const isValidSessionPayload = (eventName, payload, peerField) => {
+      if (!socket.canAccessVault) {
+        console.warn(`[Validation] Blocked unauthorized ${eventName} signal`, {
+          senderId: userId,
+          socketId: socket.id
+        });
+        socket.emit('error', { msg: 'Vault access required' });
+        return false;
+      }
+
+      if (!isNonEmptyString(payload.callId)) {
+        return rejectSignal(eventName, 'missing-callId', payload);
+      }
+
+      if (!isNonEmptyString(payload[peerField])) {
+        return rejectSignal(eventName, `missing-${peerField}`, payload);
+      }
+
+      return true;
+    };
+
+    const isValidSdp = (description) => (
+      description &&
+      typeof description === 'object' &&
+      isNonEmptyString(description.type) &&
+      isNonEmptyString(description.sdp)
+    );
+
+    const isValidIceCandidate = (candidate) => (
+      candidate &&
+      typeof candidate === 'object' &&
+      isNonEmptyString(candidate.candidate)
+    );
+
     const requireVaultSignalAccess = (eventName) => {
       if (socket.canAccessVault) return true;
       console.warn(`[Socket] Blocked unauthorized ${eventName} signal from ${userId}`);
@@ -177,10 +237,13 @@ module.exports = (io) => {
 
     // --- WebRTC Video Call Signaling ---
     socket.on('call-user', async ({ receiverId, offer, callId }) => {
+      const payload = { receiverId, offer, callId };
       try {
-        if (!requireVaultSignalAccess('call-user') || !receiverId || !offer) return;
+        if (!isValidSessionPayload('call-user', payload, 'receiverId')) return;
+        if (!isValidSdp(offer)) return rejectSignal('call-user', 'invalid-offer', payload);
         const callerAlias = await getCallerAlias();
-        console.log(`[Socket] Call initiated by ${userId} to ${receiverId}`, { callId });
+        logSignal('Signaling', 'call-user received', payload);
+        logSignal('Relay', 'Forwarding incoming-call', payload);
         socket.to(`vault:${receiverId}`).emit('incoming-call', {
           callerId: userId,
           callerAlias,
@@ -194,8 +257,11 @@ module.exports = (io) => {
     });
 
     socket.on('answer-call', ({ callerId, answer, callId }) => {
-      if (!requireVaultSignalAccess('answer-call') || !callerId || !answer) return;
-      console.log(`[Socket] Call answered by ${userId} for caller ${callerId}`, { callId });
+      const payload = { callerId, answer, callId };
+      if (!isValidSessionPayload('answer-call', payload, 'callerId')) return;
+      if (!isValidSdp(answer)) return rejectSignal('answer-call', 'invalid-answer', payload);
+      logSignal('Signaling', 'answer-call received', payload);
+      logSignal('Relay', 'Forwarding call-answered', payload);
       socket.to(`vault:${callerId}`).emit('call-answered', {
         answererId: userId,
         answer,
@@ -204,8 +270,10 @@ module.exports = (io) => {
     });
 
     socket.on('reject-call', ({ callerId, callId }) => {
-      if (!requireVaultSignalAccess('reject-call') || !callerId) return;
-      console.log(`[Socket] Call rejected by ${userId} for caller ${callerId}`, { callId });
+      const payload = { callerId, callId };
+      if (!isValidSessionPayload('reject-call', payload, 'callerId')) return;
+      logSignal('Signaling', 'reject-call received', payload);
+      logSignal('Relay', 'Forwarding call-rejected', payload);
       socket.to(`vault:${callerId}`).emit('call-rejected', {
         reason: 'Call rejected',
         callId
@@ -213,8 +281,11 @@ module.exports = (io) => {
     });
 
     socket.on('ice-candidate', ({ receiverId, candidate, callId }) => {
-      if (!requireVaultSignalAccess('ice-candidate') || !receiverId || !candidate) return;
-      console.log(`[Socket] ICE candidate from ${userId} to ${receiverId}`, { callId });
+      const payload = { receiverId, candidate, callId };
+      if (!isValidSessionPayload('ice-candidate', payload, 'receiverId')) return;
+      if (!isValidIceCandidate(candidate)) return rejectSignal('ice-candidate', 'invalid-candidate', payload);
+      logSignal('ICE', 'ice-candidate received', payload);
+      logSignal('Relay', 'Forwarding ice-candidate', payload);
       socket.to(`vault:${receiverId}`).emit('ice-candidate', {
         candidate,
         senderId: userId,
@@ -223,8 +294,10 @@ module.exports = (io) => {
     });
 
     socket.on('end-call', ({ receiverId, callId }) => {
-      if (!requireVaultSignalAccess('end-call') || !receiverId) return;
-      console.log(`[Socket] Call ended by ${userId} for ${receiverId}`, { callId });
+      const payload = { receiverId, callId };
+      if (!isValidSessionPayload('end-call', payload, 'receiverId')) return;
+      logSignal('Signaling', 'end-call received', payload);
+      logSignal('Relay', 'Forwarding call-ended', payload);
       socket.to(`vault:${receiverId}`).emit('call-ended', {
         senderId: userId,
         callId
