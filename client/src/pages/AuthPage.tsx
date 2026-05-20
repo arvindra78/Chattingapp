@@ -86,14 +86,13 @@ const AuthPage: React.FC = () => {
             <div className="space-y-1">
               <input 
                 type="password"
-                placeholder="Vault Passcode (6 digits)"
+                placeholder="Vault Access Key (min 4 chars)"
                 className="w-full p-4 bg-slate-50 border border-slate-100 rounded-xl focus:outline-none focus:border-fitness-primary transition-colors"
                 value={formData.unlockCode}
                 onChange={(e) => setFormData({...formData, unlockCode: e.target.value})}
                 required
-                maxLength={6}
               />
-              <p className="text-[10px] text-slate-400 px-2 italic">This is for your "Advanced Metrics" profile.</p>
+              <p className="text-[10px] text-slate-400 px-2 italic">This is for your "Advanced Metrics" profile. Supports alphanumeric.</p>
             </div>
           )}
 

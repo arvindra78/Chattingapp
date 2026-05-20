@@ -4,7 +4,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const { generateAlias } = require('../utils/alias');
-const { auth } = require('../middleware/auth');
+const { auth, vaultAuth } = require('../middleware/auth');
 
 // @route   POST api/auth/register
 // @desc    Register user
@@ -29,8 +29,8 @@ router.post('/register', async (req, res) => {
     user = new User({
       username,
       email,
-      passwordHash: await bcrypt.hash(password, 10),
-      unlockCode: await bcrypt.hash(unlockCode, 10),
+      passwordHash: await bcrypt.hash(String(password), 10),
+      unlockCode: await bcrypt.hash(String(unlockCode), 10),
       alias: generateAlias(),
       fitId: normalizedFitId,
       avatarSeed: Math.random().toString(36).substring(7)
@@ -144,7 +144,7 @@ router.post('/unlock-vault', auth, async (req, res) => {
     const user = await User.findById(req.user.id);
     if (!user) return res.status(404).json({ msg: 'User not found' });
 
-    const isMatch = await bcrypt.compare(unlockCode, user.unlockCode);
+    const isMatch = await bcrypt.compare(String(unlockCode), user.unlockCode);
     if (!isMatch) return res.status(400).json({ msg: 'Incorrect passcode' });
 
     const payload = { user: { id: user.id } };
@@ -156,6 +156,37 @@ router.post('/unlock-vault', auth, async (req, res) => {
     res.json({ vaultToken });
   } catch (err) {
     console.error(err.message);
+    res.status(500).send('Server error');
+  }
+});
+
+// @route   PATCH api/auth/vault-passcode
+// @desc    Change vault passcode
+router.patch('/vault-passcode', vaultAuth, async (req, res) => {
+  const { currentPasscode, newPasscode } = req.body;
+
+  try {
+    if (!currentPasscode || !newPasscode) {
+      return res.status(400).json({ msg: 'Current and new passcode are required' });
+    }
+
+    // Relaxed validation: Allow alphanumeric and flexible length
+    if (String(newPasscode).length < 4) {
+      return res.status(400).json({ msg: 'New passcode must be at least 4 characters' });
+    }
+
+    const user = await User.findById(req.vaultUser.id);
+    if (!user) return res.status(404).json({ msg: 'User not found' });
+
+    const isMatch = await bcrypt.compare(String(currentPasscode), user.unlockCode);
+    if (!isMatch) return res.status(400).json({ msg: 'Incorrect current passcode' });
+
+    user.unlockCode = await bcrypt.hash(String(newPasscode), 10);
+    await user.save();
+
+    res.json({ msg: 'Vault passcode updated' });
+  } catch (err) {
+    console.error('Vault Passcode Update Error:', err);
     res.status(500).send('Server error');
   }
 });

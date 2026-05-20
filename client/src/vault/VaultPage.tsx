@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import SearchNode from './SearchNode';
 import ChatRoom from './ChatRoom';
-import { MessageSquare, Loader2, Trash2, AlertTriangle, X } from 'lucide-react';
+import { MessageSquare, Loader2, Trash2, AlertTriangle, X, Settings, ShieldCheck, KeyRound, Save } from 'lucide-react';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import { buildApiUrl, getVaultSocket, releaseVaultSocket } from '../runtimeConfig';
@@ -24,9 +24,15 @@ const VaultPage: React.FC = () => {
   const [nodes, setNodes] = useState<Node[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedNode, setSelectedNode] = useState<{ id: string, alias: string, nickname?: string | null } | null>(null);
-  const [view, setView] = useState<'nodes' | 'search'>('nodes');
+  const [view, setView] = useState<'nodes' | 'search' | 'settings'>('nodes');
   const [nodeToDelete, setNodeToDelete] = useState<Node | null>(null);
   const [socket, setSocket] = useState<any>(null);
+  
+  // Settings state
+  const [currentPasscode, setCurrentPasscode] = useState('');
+  const [newPasscode, setNewPasscode] = useState('');
+  const [savingSettings, setSavingSettings] = useState(false);
+
   const longPressTimer = useRef<any>(null);
   const videoCallRef = useRef<VideoCallManagerHandle>(null);
   const selectedNodeRef = useRef<typeof selectedNode>(null);
@@ -149,6 +155,32 @@ const VaultPage: React.FC = () => {
     }
   };
 
+  const handleUpdatePasscode = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!currentPasscode || !newPasscode) {
+      return window.alert('Both current and new passcodes are required.');
+    }
+    if (newPasscode.length < 4) {
+      return window.alert('New passcode must be at least 4 characters.');
+    }
+
+    setSavingSettings(true);
+    try {
+      await axios.patch(buildApiUrl('/api/auth/vault-passcode'), 
+        { currentPasscode, newPasscode },
+        { headers: { 'x-vault-token': vaultToken } }
+      );
+      window.alert('Vault access key updated successfully.');
+      setCurrentPasscode('');
+      setNewPasscode('');
+      setView('nodes');
+    } catch (err: any) {
+      window.alert(err.response?.data?.msg || 'Failed to update access key.');
+    } finally {
+      setSavingSettings(false);
+    }
+  };
+
   return (
     <div className="relative">
       <VideoCallManager ref={videoCallRef} socket={socket} />
@@ -185,6 +217,12 @@ const VaultPage: React.FC = () => {
               className={`pb-3 text-xs uppercase tracking-widest font-bold transition-colors ${view === 'search' ? 'text-white border-b border-white' : 'text-white/20'}`}
             >
               Discovery
+            </button>
+            <button 
+              onClick={() => setView('settings')}
+              className={`pb-3 text-xs uppercase tracking-widest font-bold transition-colors ${view === 'settings' ? 'text-white border-b border-white' : 'text-white/20'}`}
+            >
+              Settings
             </button>
           </div>
 
@@ -246,8 +284,74 @@ const VaultPage: React.FC = () => {
                 </div>
               )}
             </div>
-          ) : (
+          ) : view === 'search' ? (
             <SearchNode onSelect={(node) => setSelectedNode({ id: node._id, alias: node.alias, nickname: null })} />
+          ) : (
+            <div className="space-y-6">
+              <div className="flex items-center gap-3 text-white/40 mb-2">
+                <Settings size={20} />
+                <h3 className="font-mono text-sm uppercase tracking-[0.2em]">Security Protocol</h3>
+              </div>
+              
+              <div className="glass p-6 rounded-3xl space-y-6 border-white/5">
+                <div className="flex items-center gap-4 mb-2">
+                  <div className="w-12 h-12 rounded-2xl bg-white/5 flex items-center justify-center text-fitness-secondary">
+                    <ShieldCheck size={24} />
+                  </div>
+                  <div>
+                    <h4 className="font-bold text-white text-sm">Vault Access Key</h4>
+                    <p className="text-[10px] text-white/40 uppercase tracking-widest">Update your secure unlock credential</p>
+                  </div>
+                </div>
+
+                <form onSubmit={handleUpdatePasscode} className="space-y-4">
+                  <div className="space-y-2">
+                    <label className="text-[10px] text-white/30 uppercase font-bold tracking-widest px-1">Current Key</label>
+                    <div className="relative">
+                      <KeyRound className="absolute left-4 top-1/2 -translate-y-1/2 text-white/20" size={18} />
+                      <input
+                        type="password"
+                        value={currentPasscode}
+                        onChange={(e) => setCurrentPasscode(e.target.value)}
+                        placeholder="••••••••"
+                        className="w-full bg-white/5 border border-white/10 rounded-2xl py-4 pl-12 pr-4 text-white font-mono placeholder:text-white/10 focus:outline-none focus:border-fitness-secondary/50 transition-colors"
+                        required
+                      />
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="text-[10px] text-white/30 uppercase font-bold tracking-widest px-1">New Key</label>
+                    <div className="relative">
+                      <KeyRound className="absolute left-4 top-1/2 -translate-y-1/2 text-white/20" size={18} />
+                      <input
+                        type="password"
+                        value={newPasscode}
+                        onChange={(e) => setNewPasscode(e.target.value)}
+                        placeholder="••••••••"
+                        className="w-full bg-white/5 border border-white/10 rounded-2xl py-4 pl-12 pr-4 text-white font-mono placeholder:text-white/10 focus:outline-none focus:border-fitness-secondary/50 transition-colors"
+                        required
+                      />
+                    </div>
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={savingSettings || newPasscode.length < 4 || !currentPasscode}
+                    className="w-full py-4 mt-4 rounded-2xl bg-fitness-secondary text-black font-black uppercase tracking-[0.2em] text-xs active:scale-95 transition-all flex items-center justify-center gap-2 disabled:opacity-30 disabled:grayscale disabled:scale-100"
+                  >
+                    {savingSettings ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
+                    Update Security Key
+                  </button>
+                </form>
+
+                <div className="p-4 bg-white/5 rounded-2xl border border-white/5">
+                  <p className="text-[10px] text-white/40 leading-relaxed italic">
+                    Note: Your access key can now contain letters, numbers, and special characters. Minimum length is 4 characters.
+                  </p>
+                </div>
+              </div>
+            </div>
           )}
         </div>
       )}

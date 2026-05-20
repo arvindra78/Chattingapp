@@ -78,14 +78,13 @@ const VaultUnlock: React.FC = () => {
                 onChange={(e) => setPasscode(e.target.value)}
                 autoFocus
                 className="w-full bg-white/5 border-b border-white/20 text-center text-3xl tracking-[0.5em] py-3 focus:outline-none focus:border-white transition-colors"
-                maxLength={6}
               />
               
               {error && <p className="text-red-500 text-xs text-center">{error}</p>}
 
               <button 
                 type="submit"
-                disabled={isVerifying || passcode.length < 4}
+                disabled={isVerifying || passcode.length < 1}
                 className="w-full h-12 flex items-center justify-center bg-white text-black font-bold uppercase tracking-widest text-xs disabled:opacity-20"
               >
                 {isVerifying ? <Loader2 className="animate-spin" size={20} /> : 'Unlock System'}
