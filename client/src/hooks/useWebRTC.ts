@@ -269,6 +269,7 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
       return false;
     }
 
+
     if (!activeSocket?.connected) {
       log('Signaling', 'Socket unavailable for signal', { event });
       return false;
