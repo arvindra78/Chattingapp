@@ -72,7 +72,7 @@ const rtcConfig: RTCConfiguration = {
         }]
       : [])
   ],
-  iceCandidatePoolSize: 10,
+  iceCandidatePoolSize: 2,
   iceTransportPolicy: ICE_TRANSPORT_POLICY
 };
 
@@ -83,7 +83,7 @@ const DEGRADED_VIDEO_FRAMERATE = 15;
 const DISCONNECT_GRACE_MS = 12_000;
 const DELAYED_IDLE_MS = 1_200;
 const STATS_INTERVAL_MS = 5_000;
-const MAX_ICE_RESTARTS = 1;
+const MAX_ICE_RESTARTS = 3;
 const ICE_CONNECTIVITY_TIMEOUT_MS = 25_000;
 
 const createCallId = () => {
@@ -229,7 +229,8 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
     clearIceConnectivityTimer();
     stopStatsMonitor();
     closePeer();
-    stopStreamTracks(localStreamRef.current, 'local');
+    // NOTE: local stream tracks are owned by useMediaStream — do NOT stop them here.
+    // Stopping them here permanently kills the camera/mic, making any retry impossible.
     stopStreamTracks(remoteStreamRef.current, 'remote');
     setRemoteStream(null);
     setCallerInfo(null);
@@ -402,20 +403,8 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
     }
   }, [log]);
 
-  const startIceConnectivityTimer = useCallback(() => {
-    clearIceConnectivityTimer();
-    iceConnectivityTimerRef.current = window.setTimeout(() => {
-      const pc = peerRef.current;
-      if (!pc || pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') return;
-
-      log('ICE', 'ICE connectivity failure timeout', {
-        timeoutMs: ICE_CONNECTIVITY_TIMEOUT_MS
-      });
-      logTurnHealth('connectivity-timeout');
-      void logSelectedCandidatePair('connectivity-timeout');
-    }, ICE_CONNECTIVITY_TIMEOUT_MS);
-  }, [clearIceConnectivityTimer, log, logSelectedCandidatePair, logTurnHealth]);
-
+  // restartIce is declared BEFORE startIceConnectivityTimer so the timer callback
+  // can reference it without a used-before-declaration error.
   const restartIce = useCallback(async () => {
     const pc = peerRef.current;
     const receiverId = targetUserIdRef.current;
@@ -454,6 +443,28 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
       iceRestartInFlightRef.current = false;
     }
   }, [emitSignal, log, logTurnHealth]);
+
+  const startIceConnectivityTimer = useCallback(() => {
+    clearIceConnectivityTimer();
+    iceConnectivityTimerRef.current = window.setTimeout(() => {
+      const pc = peerRef.current;
+      if (!pc || pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') return;
+
+      log('ICE', 'ICE connectivity failure timeout', {
+        timeoutMs: ICE_CONNECTIVITY_TIMEOUT_MS
+      });
+      logTurnHealth('connectivity-timeout');
+      void logSelectedCandidatePair('connectivity-timeout');
+
+      // Act on the timeout instead of just logging.
+      if (iceRestartCountRef.current < MAX_ICE_RESTARTS) {
+        void restartIce();
+      } else {
+        log('ICE', 'ICE timeout: restart limit reached, failing call');
+        resetCall('failed', 'failed');
+      }
+    }, ICE_CONNECTIVITY_TIMEOUT_MS);
+  }, [clearIceConnectivityTimer, log, logSelectedCandidatePair, logTurnHealth, restartIce, resetCall]);
 
   const startStatsMonitor = useCallback(() => {
     stopStatsMonitor();
@@ -553,9 +564,11 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
       });
       pc.addTrack(track, stream);
     });
-
-    void tuneVideoSender(pc);
-  }, [log, tuneVideoSender]);
+    // NOTE: tuneVideoSender is intentionally NOT called here.
+    // Calling setParameters() before offer/answer completes returns empty encodings
+    // and throws InvalidStateError in Firefox / silently fails in Safari.
+    // It is called in onconnectionstatechange once the connection is 'connected'.
+  }, [log]);
 
   const createPeerConnection = useCallback((remoteUserId: string, stream: MediaStream) => {
     if (peerRef.current && peerRef.current.connectionState !== 'closed') {
@@ -580,16 +593,36 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
     attachTracks(pc, stream);
 
     pc.ontrack = (event) => {
+      const track = event.track;
       log('Media', 'ontrack', {
-        kind: event.track.kind,
+        kind: track.kind,
         streams: event.streams.length,
-        muted: event.track.muted,
-        readyState: event.track.readyState
+        muted: track.muted,
+        readyState: track.readyState
       });
 
-      const inboundStream = event.streams[0] || new MediaStream([event.track]);
-      remoteStreamRef.current = inboundStream;
-      setRemoteStream(inboundStream);
+      // BUG FIX: Never create a new MediaStream per track.
+      // Old code: `new MediaStream([event.track])` — audio arrived first, video
+      // overwrote it, silently dropping audio from remoteStream.
+      // Fix: keep one persistent stream; accumulate both tracks into it.
+      // Always emit a new reference so React re-renders on every track arrival.
+      if (!remoteStreamRef.current) {
+        remoteStreamRef.current = event.streams[0] ?? new MediaStream();
+      }
+
+      const inboundStream = remoteStreamRef.current;
+
+      if (!inboundStream.getTrackById(track.id)) {
+        const stale = inboundStream.getTracks().find((t) => t.kind === track.kind);
+        if (stale) {
+          inboundStream.removeTrack(stale);
+          log('Media', `Replaced stale ${track.kind} track on ICE restart`, { staleId: stale.id });
+        }
+        inboundStream.addTrack(track);
+      }
+
+      // New reference forces React state update regardless of track arrival order.
+      setRemoteStream(new MediaStream(inboundStream.getTracks()));
     };
     pc.onicecandidate = (event) => {
       if (!event.candidate) {
@@ -641,6 +674,11 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
         setCallState('connected');
         startStatsMonitor();
         void logSelectedCandidatePair('connection-connected');
+        // BUG FIX: tuneVideoSender must be called AFTER the offer/answer exchange so
+        // sender.getParameters() returns populated encodings. Calling it in
+        // attachTracks() before SDP gives empty encodings and throws InvalidStateError
+        // in Firefox / silently no-ops in Safari.
+        void tuneVideoSender(pc);
       }
 
       if (pc.connectionState === 'disconnected') {
@@ -675,7 +713,11 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
       }
       if (pc.iceConnectionState === 'failed') {
         logTurnHealth('ice-failed');
-        void restartIce();
+        // BUG FIX: restartIce() removed here to avoid double-triggering.
+        // onconnectionstatechange 'failed' is the single recovery entry point.
+        // Calling restartIce() from both handlers consumed 2 restart credits per
+        // failure and could race when iceRestartInFlightRef guard wasn't set yet.
+        log('ICE', 'ICE connection failed; recovery handled by connectionstatechange');
       }
     };
 
@@ -706,7 +748,8 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
     restartIce,
     startIceConnectivityTimer,
     startStatsMonitor,
-    stopStatsMonitor
+    stopStatsMonitor,
+    tuneVideoSender
   ]);
 
   const handleRestartOffer = useCallback(async (callerId: string, offer: RTCSessionDescriptionInit, callId: string) => {
