@@ -25,9 +25,13 @@ A production-ready mobile-first web application that appears as a modern fitness
 - **Dual Auth**: Requires a separate 6-digit passcode to unlock the Vault JWT.
 - **Stealth UI**: Matte black, glassmorphism, and minimal typography.
 - **Encrypted Messaging**: All messages are AES-256 encrypted before being stored.
-- **Anonymity**: Automatic alias generation (e.g., *ShadowPulse*). Users search by unique FitID.
+- **Identity controls**: Each user has a unique display name and public FitID (for example, `john_doe` or `john.doe`). Both can be updated from Profile.
+- **Public/private Discovery**: Public profiles appear in Vault Discovery and can receive direct messages. Private profiles are hidden from Discovery and require an accepted DM request before messaging.
+- **DM requests**: Incoming private-account requests appear directly at the top of the DM list, where they can be accepted or declined.
+- **Conversation ordering**: DM contacts are sorted by their most recent message, with unread counts shown on each contact.
 - **Panic Exit**: Triple-tap the top bar to instantly wipe sensitive state and return to the fitness app.
 - **Real-time**: Powered by Socket.IO with typing indicators and online presence.
+- **Mobile keyboard support**: The chat composer follows the visible mobile viewport so it remains above the on-screen keyboard.
 
 ## 🛠️ Tech Stack
 
@@ -146,6 +150,15 @@ Socket.IO enables real-time messaging with:
 - Online/offline presence
 - Message delivery confirmation
 - Automatic reconnection handling
+
+### Discovery and DM privacy
+
+1. Set a unique **Display name** and **Public FitID** during sign-up or later in Profile. FitIDs accept 3-24 letters, numbers, dots, and underscores.
+2. Use the **Public / Private** Discovery switch in Profile to control whether your FitID appears in Vault Discovery.
+3. Public Discovery profiles can be opened and messaged directly.
+4. Private profiles require the recipient to accept a DM request before messages can be sent.
+
+Existing DM contacts remain available when a profile is switched to Private.
 
 ## 📝 License
 

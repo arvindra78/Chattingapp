@@ -8,6 +8,7 @@ const AuthPage: React.FC = () => {
   const [isLogin, setIsLogin] = useState(true);
   const [formData, setFormData] = useState({
     username: '',
+    alias: '',
     fitId: '',
     email: '',
     password: '',
@@ -15,22 +16,32 @@ const AuthPage: React.FC = () => {
   });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [showVisibilityDialog, setShowVisibilityDialog] = useState(false);
   const { login } = useAuth();
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const submitRegistration = async (isDiscoverable?: boolean) => {
     setLoading(true);
     setError('');
 
     try {
       const endpoint = isLogin ? '/api/auth/login' : '/api/auth/register';
-      const res = await axios.post(buildApiUrl(endpoint), formData);
+      const payload = isLogin ? formData : { ...formData, isDiscoverable };
+      const res = await axios.post(buildApiUrl(endpoint), payload);
       login(res.data.token, res.data.user);
     } catch (err: any) {
       setError(err.response?.data?.msg || 'Something went wrong');
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!isLogin) {
+      setShowVisibilityDialog(true);
+      return;
+    }
+    submitRegistration();
   };
 
   return (
@@ -45,7 +56,7 @@ const AuthPage: React.FC = () => {
           {!isLogin && (
             <input 
               type="text"
-              placeholder="Username"
+              placeholder="Account username"
               className="w-full p-4 bg-slate-50 border border-slate-100 rounded-xl focus:outline-none focus:border-fitness-primary transition-colors"
               value={formData.username}
               onChange={(e) => setFormData({...formData, username: e.target.value})}
@@ -54,16 +65,30 @@ const AuthPage: React.FC = () => {
           )}
           {!isLogin && (
             <div className="space-y-1">
-              <input 
+              <input
                 type="text"
-                placeholder="Choose FitID (e.g. FIT-ARVIN01)"
-                className="w-full p-4 bg-slate-50 border border-slate-100 rounded-xl focus:outline-none focus:border-fitness-primary transition-colors uppercase"
-                value={formData.fitId}
-                onChange={(e) => setFormData({...formData, fitId: e.target.value.toUpperCase()})}
+                placeholder="Display name (e.g. John Doe)"
+                className="w-full p-4 bg-slate-50 border border-slate-100 rounded-xl focus:outline-none focus:border-fitness-primary transition-colors"
+                value={formData.alias}
+                onChange={(e) => setFormData({...formData, alias: e.target.value})}
                 required
                 maxLength={24}
               />
-              <p className="text-[10px] text-slate-400 px-2 italic">This unique FitID is how trusted nodes will find you.</p>
+              <p className="text-[10px] text-slate-400 px-2 italic">This unique name is shown to people you connect with.</p>
+            </div>
+          )}
+          {!isLogin && (
+            <div className="space-y-1">
+              <input 
+                type="text"
+                placeholder="Choose public FitID (e.g. john_doe)"
+                className="w-full p-4 bg-slate-50 border border-slate-100 rounded-xl focus:outline-none focus:border-fitness-primary transition-colors lowercase"
+                value={formData.fitId}
+                onChange={(e) => setFormData({...formData, fitId: e.target.value.toLowerCase()})}
+                required
+                maxLength={24}
+              />
+              <p className="text-[10px] text-slate-400 px-2 italic">Your public Discovery ID. Use 3-24 letters, numbers, dots, or underscores.</p>
             </div>
           )}
           <input 
@@ -114,6 +139,40 @@ const AuthPage: React.FC = () => {
           {isLogin ? "Don't have an account? Sign Up" : "Already have an account? Sign In"}
         </button>
       </div>
+
+      {showVisibilityDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-6 backdrop-blur-sm">
+          <div className="w-full max-w-sm rounded-3xl bg-white p-6 shadow-2xl">
+            <h2 className="text-xl font-black text-slate-800">Choose FitID visibility</h2>
+            <p className="mt-2 text-sm text-slate-500">You can change this later in Profile.</p>
+            <div className="mt-5 space-y-3">
+              <button
+                type="button"
+                onClick={() => { setShowVisibilityDialog(false); submitRegistration(true); }}
+                className="w-full rounded-2xl border border-fitness-primary bg-fitness-primary/10 p-4 text-left transition-colors hover:bg-fitness-primary/20"
+              >
+                <span className="block font-bold text-fitness-primary">Public</span>
+                <span className="mt-1 block text-xs text-slate-500">Your FitID appears in Discovery and anyone can send you a direct DM.</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => { setShowVisibilityDialog(false); submitRegistration(false); }}
+                className="w-full rounded-2xl border border-slate-200 p-4 text-left transition-colors hover:bg-slate-50"
+              >
+                <span className="block font-bold text-slate-700">Private</span>
+                <span className="mt-1 block text-xs text-slate-500">Your FitID is hidden from Discovery and DMs need your approval.</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowVisibilityDialog(false)}
+                className="w-full py-2 text-sm font-semibold text-slate-400"
+              >
+                Back to sign-up
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

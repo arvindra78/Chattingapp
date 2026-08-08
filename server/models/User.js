@@ -12,8 +12,10 @@ const userSchema = new mongoose.Schema({
   passwordHash: { type: String, required: true },
   
   // Stealth Features
-  alias: { type: String, unique: true },
-  fitId: { type: String, required: true, unique: true, trim: true, uppercase: true },
+  alias: { type: String, unique: true, trim: true },
+  // Public handle shown in Discovery. Private messaging still requires approval.
+  fitId: { type: String, required: true, unique: true, trim: true, lowercase: true },
+  isDiscoverable: { type: Boolean, default: true },
   avatarSeed: { type: String },
   unlockCode: { type: String, required: true }, // Passcode for the vault
   
@@ -24,6 +26,11 @@ const userSchema = new mongoose.Schema({
   activeSessions: [sessionSchema],
   vaultContacts: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
   vaultNicknames: { type: Map, of: String },
+  dmRequests: [{
+    _id: false,
+    requesterId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    createdAt: { type: Date, default: Date.now }
+  }],
 
   // Fitness Data (Mask)
   fitnessStats: {

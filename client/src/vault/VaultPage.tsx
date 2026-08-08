@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import SearchNode from './SearchNode';
 import ChatRoom from './ChatRoom';
-import { MessageSquare, Loader2, Trash2, AlertTriangle, X, Settings, ShieldCheck, KeyRound, Save } from 'lucide-react';
+import { MessageSquare, Loader2, Trash2, AlertTriangle, X, Settings, ShieldCheck, KeyRound, Save, Check, UserRoundX } from 'lucide-react';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import { buildApiUrl, getVaultSocket, releaseVaultSocket } from '../runtimeConfig';
@@ -19,9 +19,14 @@ interface Node {
   lastInteraction: string;
 }
 
+interface DmRequest extends Omit<Node, 'unreadCount' | 'lastInteraction'> {
+  requestedAt: string;
+}
+
 const VaultPage: React.FC = () => {
   const { vaultToken } = useAuth();
   const [nodes, setNodes] = useState<Node[]>([]);
+  const [requests, setRequests] = useState<DmRequest[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedNode, setSelectedNode] = useState<{ id: string, alias: string, nickname?: string | null } | null>(null);
   const [view, setView] = useState<'nodes' | 'search' | 'settings'>('nodes');
@@ -54,9 +59,21 @@ const VaultPage: React.FC = () => {
     }
   };
 
+  const fetchRequests = async () => {
+    try {
+      const res = await axios.get(buildApiUrl('/api/sync-center/requests'), {
+        headers: { 'x-vault-token': vaultToken }
+      });
+      setRequests(res.data);
+    } catch (err) {
+      console.error('Fetch DM Requests Error:', err);
+    }
+  };
+
   useEffect(() => {
     if (!selectedNode && view === 'nodes') {
       fetchNodes();
+      fetchRequests();
     }
   }, [selectedNode, view, vaultToken]);
 
@@ -96,6 +113,9 @@ const VaultPage: React.FC = () => {
         }
       };
 
+      const handleDmRequest = () => fetchRequests();
+      const handleDmRequestResolved = () => fetchNodes();
+
       const handleConnect = () => {
         console.log('[VaultSocket] Connected shared vault socket', newSocket.id);
       };
@@ -108,22 +128,40 @@ const VaultPage: React.FC = () => {
       newSocket.off('message', handleMessage);
       newSocket.off('connect', handleConnect);
       newSocket.off('disconnect', handleDisconnect);
+      newSocket.off('dmRequestReceived', handleDmRequest);
+      newSocket.off('dmRequestResolved', handleDmRequestResolved);
 
       newSocket.on('userStatus', handleUserStatus);
       newSocket.on('message', handleMessage);
       newSocket.on('connect', handleConnect);
       newSocket.on('disconnect', handleDisconnect);
+      newSocket.on('dmRequestReceived', handleDmRequest);
+      newSocket.on('dmRequestResolved', handleDmRequestResolved);
 
       return () => {
         newSocket.off('userStatus', handleUserStatus);
         newSocket.off('message', handleMessage);
         newSocket.off('connect', handleConnect);
         newSocket.off('disconnect', handleDisconnect);
+        newSocket.off('dmRequestReceived', handleDmRequest);
+        newSocket.off('dmRequestResolved', handleDmRequestResolved);
         releaseVaultSocket(newSocket);
         setSocket(null);
       };
     }
   }, [vaultToken]); // Only depend on vaultToken to keep socket stable
+
+  const respondToRequest = async (request: DmRequest, action: 'accept' | 'decline') => {
+    try {
+      await axios.patch(buildApiUrl(`/api/sync-center/requests/${request._id}`), { action }, {
+        headers: { 'x-vault-token': vaultToken }
+      });
+      setRequests((prev) => prev.filter((item) => item._id !== request._id));
+      if (action === 'accept') await fetchNodes();
+    } catch (err: any) {
+      window.alert(err.response?.data?.msg || 'Failed to update DM request');
+    }
+  };
 
   const handleLongPress = (node: Node) => {
     if (navigator.vibrate) navigator.vibrate(50);
@@ -186,7 +224,7 @@ const VaultPage: React.FC = () => {
       <VideoCallManager ref={videoCallRef} socket={socket} />
 
       {selectedNode ? (
-        <div className="fixed inset-0 bg-vault-bg z-[60] flex flex-col">
+        <div className="fixed inset-0 h-dvh bg-vault-bg z-[60] flex flex-col overflow-hidden">
           <ChatRoom
             receiverId={selectedNode.id}
             receiverAlias={selectedNode.alias}
@@ -229,6 +267,24 @@ const VaultPage: React.FC = () => {
           {view === 'nodes' ? (
             <div className="space-y-4">
               <p className="text-[10px] text-white/20 uppercase tracking-[0.2em]">Secure communication channels</p>
+
+              {requests.length > 0 && (
+                <div className="space-y-3">
+                  <p className="text-[10px] text-fitness-secondary uppercase tracking-[0.2em]">DM requests</p>
+                  {requests.map((request) => (
+                    <div key={request._id} className="glass p-4 rounded-xl flex items-center justify-between gap-3 border border-fitness-secondary/20">
+                      <div className="min-w-0">
+                        <div className="font-mono text-sm truncate">{request.alias}</div>
+                        <div className="text-[10px] text-white/40">@{request.fitId} wants to message you</div>
+                      </div>
+                      <div className="flex gap-2">
+                        <button onClick={() => respondToRequest(request, 'accept')} className="p-2 rounded-lg bg-fitness-secondary text-black" aria-label="Accept DM request"><Check size={16} /></button>
+                        <button onClick={() => respondToRequest(request, 'decline')} className="p-2 rounded-lg bg-white/10 text-white/60" aria-label="Decline DM request"><UserRoundX size={16} /></button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
               
               {loading ? (
                 <div className="py-12 flex justify-center"><Loader2 className="animate-spin text-white/20" /></div>

@@ -6,6 +6,7 @@ interface User {
   username: string;
   alias: string;
   fitId: string;
+  isDiscoverable: boolean;
 }
 
 interface WorkoutAlert {

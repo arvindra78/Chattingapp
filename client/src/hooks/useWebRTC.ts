@@ -1024,6 +1024,7 @@ export const useWebRTC = (socket: Socket | null, _userId: string | undefined) =>
       scheduleIdleReset(activeCallId, 1_500);
     };
 
+
     const handleCallEnded = ({ callId }: { callId?: string } = {}) => {
       if (!hasCallId(callId)) {
         log('Signaling', 'Ignoring call-ended without callId');

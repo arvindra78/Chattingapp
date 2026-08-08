@@ -52,6 +52,19 @@ module.exports = (io) => {
         }
         if (!receiverId || (messageType !== 'image' && !message)) return;
 
+        const canStartDirectDm = await User.exists({
+          _id: receiverId,
+          $or: [
+            { isDiscoverable: { $ne: false } },
+            { vaultContacts: userId }
+          ]
+        });
+        if (!canStartDirectDm) {
+          socket.emit('error', { msg: 'This private account must accept your DM request first' });
+          if (typeof acknowledge === 'function') acknowledge({ ok: false, msg: 'This private account must accept your DM request first' });
+          return;
+        }
+
         await User.bulkWrite([
           {
             updateOne: {

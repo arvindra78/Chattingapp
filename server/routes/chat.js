@@ -1,4 +1,5 @@
 const express = require('express');
+const mongoose = require('mongoose');
 const router = express.Router();
 const Message = require('../models/Message');
 const User = require('../models/User');
@@ -20,6 +21,17 @@ const getSharedTheme = async (userA, userB) => {
   const participantsKey = getParticipantsKey(userA, userB);
   const theme = await ChatTheme.findOne({ participantsKey }).lean();
   return theme?.themeId || 'matrix';
+};
+
+const hasApprovedContact = async (userId, otherUserId) => {
+  const user = await User.exists({ _id: userId, vaultContacts: otherUserId });
+  return Boolean(user);
+};
+
+const canStartDirectDm = async (senderId, receiverId) => {
+  if (await hasApprovedContact(senderId, receiverId)) return true;
+  const receiver = await User.exists({ _id: receiverId, isDiscoverable: { $ne: false } });
+  return Boolean(receiver);
 };
 
 const emitVaultMessage = async ({ io, senderId, receiverId, newMessage, plaintextMessage }) => {
@@ -75,7 +87,8 @@ router.get('/unread-count', auth, async (req, res) => {
   try {
     const unreadCount = await Message.countDocuments({
       receiverId: req.user.id,
-      seen: false
+      seen: false,
+      deletedBy: { $ne: req.user.id }
     });
 
     res.json({ unreadCount });
@@ -89,35 +102,63 @@ router.get('/unread-count', auth, async (req, res) => {
 // @desc    Get users you have messaged or received messages from
 router.get('/nodes', vaultAuth, async (req, res) => {
   try {
+    const currentUserId = req.vaultUser.id;
     const currentUser = await User.findById(req.vaultUser.id)
       .select('vaultContacts vaultNicknames')
       .lean();
 
     // Find unique user IDs from messages where current user is sender or receiver
     const messages = await Message.find({
-      $or: [{ senderId: req.vaultUser.id }, { receiverId: req.vaultUser.id }]
+      $or: [{ senderId: currentUserId }, { receiverId: currentUserId }],
+      deletedBy: { $ne: currentUserId }
     })
-      .select('senderId receiverId')
+      .select('senderId receiverId seen createdAt')
       .lean()
       .sort({ createdAt: -1 });
 
     const nodeIds = new Set();
+    const interactionByNodeId = new Map();
     (currentUser?.vaultContacts || []).forEach((contactId) => nodeIds.add(contactId.toString()));
 
     messages.forEach(msg => {
       nodeIds.add(msg.senderId.toString());
       nodeIds.add(msg.receiverId.toString());
+
+      const otherUserId = msg.senderId.toString() === currentUserId.toString()
+        ? msg.receiverId.toString()
+        : msg.senderId.toString();
+      const interaction = interactionByNodeId.get(otherUserId) || {
+        lastInteraction: msg.createdAt,
+        unreadCount: 0
+      };
+      if (msg.receiverId.toString() === currentUserId.toString() && !msg.seen) {
+        interaction.unreadCount += 1;
+      }
+      interactionByNodeId.set(otherUserId, interaction);
     });
-    nodeIds.delete(req.vaultUser.id.toString());
+    nodeIds.delete(currentUserId.toString());
 
     const nodes = await User.find({ _id: { $in: Array.from(nodeIds) } })
       .select('alias fitId avatarSeed isOnline lastSeen')
       .lean();
 
-    res.json(nodes.map((node) => ({
-      ...node,
-      nickname: getNicknameForUser(currentUser?.vaultNicknames, node._id.toString())
-    })));
+    const nodesWithInteraction = nodes.map((node) => {
+      const interaction = interactionByNodeId.get(node._id.toString());
+      return {
+        ...node,
+        nickname: getNicknameForUser(currentUser?.vaultNicknames, node._id.toString()),
+        unreadCount: interaction?.unreadCount || 0,
+        lastInteraction: interaction?.lastInteraction || null
+      };
+    });
+
+    nodesWithInteraction.sort((a, b) => {
+      const aTime = a.lastInteraction ? new Date(a.lastInteraction).getTime() : 0;
+      const bTime = b.lastInteraction ? new Date(b.lastInteraction).getTime() : 0;
+      return bTime - aTime;
+    });
+
+    res.json(nodesWithInteraction);
   } catch (err) {
     console.error('Nodes Error:', err);
     res.status(500).send('Server error');
@@ -146,19 +187,149 @@ router.delete('/history/:otherUserId', vaultAuth, async (req, res) => {
       }
     ]);
 
-    const deleteResult = await Message.deleteMany({
+    const deleteResult = await Message.updateMany({
       $or: [
         { senderId: currentUserId, receiverId: otherUserId },
         { senderId: otherUserId, receiverId: currentUserId }
-      ]
+      ],
+      deletedBy: { $ne: currentUserId }
+    }, {
+      $addToSet: { deletedBy: currentUserId }
     });
 
     res.json({
       msg: 'Conversation cleared',
-      deletedCount: deleteResult.deletedCount
+      deletedCount: deleteResult.modifiedCount
     });
   } catch (err) {
     console.error('Clear History Error:', err);
+    res.status(500).send('Server error');
+  }
+});
+
+// @route   DELETE api/sync-center/contacts/:otherUserId
+// @desc    Remove a DM contact and hide that conversation for the current user
+router.delete('/contacts/:otherUserId', vaultAuth, async (req, res) => {
+  try {
+    const currentUserId = req.vaultUser.id;
+    const otherUserId = req.params.otherUserId;
+
+    if (!mongoose.Types.ObjectId.isValid(otherUserId) || otherUserId === currentUserId.toString()) {
+      return res.status(400).json({ msg: 'Invalid DM contact' });
+    }
+
+    await User.updateOne(
+      { _id: currentUserId },
+      {
+        $pull: { vaultContacts: otherUserId },
+        $unset: { [`vaultNicknames.${otherUserId}`]: 1 }
+      }
+    );
+
+    const hideResult = await Message.updateMany({
+      $or: [
+        { senderId: currentUserId, receiverId: otherUserId },
+        { senderId: otherUserId, receiverId: currentUserId }
+      ],
+      deletedBy: { $ne: currentUserId }
+    }, {
+      $addToSet: { deletedBy: currentUserId }
+    });
+
+    res.json({
+      msg: 'DM removed',
+      hiddenMessageCount: hideResult.modifiedCount
+    });
+  } catch (err) {
+    console.error('Delete Contact Error:', err);
+    res.status(500).send('Server error');
+  }
+});
+
+// @route   GET api/sync-center/requests
+// @desc    Get pending DM requests for the current user
+router.get('/requests', vaultAuth, async (req, res) => {
+  try {
+    const currentUser = await User.findById(req.vaultUser.id).select('dmRequests').lean();
+    const requestIds = (currentUser?.dmRequests || []).map((request) => request.requesterId);
+    const requesters = await User.find({ _id: { $in: requestIds } })
+      .select('alias fitId avatarSeed isOnline')
+      .lean();
+    const requesterById = new Map(requesters.map((requester) => [requester._id.toString(), requester]));
+
+    res.json((currentUser?.dmRequests || [])
+      .map((request) => {
+        const requester = requesterById.get(request.requesterId.toString());
+        return requester && { ...requester, requestedAt: request.createdAt };
+      })
+      .filter(Boolean)
+      .sort((a, b) => new Date(b.requestedAt).getTime() - new Date(a.requestedAt).getTime()));
+  } catch (err) {
+    console.error('DM Requests Error:', err);
+    res.status(500).send('Server error');
+  }
+});
+
+// @route   POST api/sync-center/requests/:otherUserId
+// @desc    Send a DM request; messaging is unavailable until it is accepted
+router.post('/requests/:otherUserId', vaultAuth, async (req, res) => {
+  try {
+    const currentUserId = req.vaultUser.id;
+    const otherUserId = req.params.otherUserId;
+    if (!mongoose.Types.ObjectId.isValid(otherUserId) || otherUserId === currentUserId.toString()) {
+      return res.status(400).json({ msg: 'Invalid DM recipient' });
+    }
+
+    const [otherUser, alreadyConnected] = await Promise.all([
+      User.exists({ _id: otherUserId }),
+      hasApprovedContact(currentUserId, otherUserId)
+    ]);
+    if (!otherUser) return res.status(404).json({ msg: 'User not found' });
+    if (alreadyConnected) return res.status(409).json({ msg: 'This DM is already approved' });
+
+    const result = await User.updateOne(
+      { _id: otherUserId, 'dmRequests.requesterId': { $ne: currentUserId } },
+      { $push: { dmRequests: { requesterId: currentUserId } } }
+    );
+    if (!result.modifiedCount) return res.status(409).json({ msg: 'DM request is already pending' });
+
+    req.app.get('io').to(`vault:${otherUserId}`).emit('dmRequestReceived');
+    res.status(201).json({ msg: 'DM request sent' });
+  } catch (err) {
+    console.error('DM Request Error:', err);
+    res.status(500).send('Server error');
+  }
+});
+
+// @route   PATCH api/sync-center/requests/:otherUserId
+// @desc    Accept or decline a pending DM request
+router.patch('/requests/:otherUserId', vaultAuth, async (req, res) => {
+  try {
+    const currentUserId = req.vaultUser.id;
+    const otherUserId = req.params.otherUserId;
+    const action = req.body.action;
+    if (!mongoose.Types.ObjectId.isValid(otherUserId) || !['accept', 'decline'].includes(action)) {
+      return res.status(400).json({ msg: 'Invalid DM request action' });
+    }
+
+    const currentUser = await User.findOne({ _id: currentUserId, 'dmRequests.requesterId': otherUserId }).select('_id');
+    if (!currentUser) return res.status(404).json({ msg: 'DM request not found' });
+
+    if (action === 'accept') {
+      await User.bulkWrite([
+        { updateOne: { filter: { _id: currentUserId }, update: { $addToSet: { vaultContacts: otherUserId } } } },
+        { updateOne: { filter: { _id: otherUserId }, update: { $addToSet: { vaultContacts: currentUserId } } } }
+      ]);
+    }
+    await User.updateOne(
+      { _id: currentUserId },
+      { $pull: { dmRequests: { requesterId: otherUserId } } }
+    );
+
+    req.app.get('io').to(`vault:${otherUserId}`).emit('dmRequestResolved', { accepted: action === 'accept' });
+    res.json({ msg: action === 'accept' ? 'DM request accepted' : 'DM request declined' });
+  } catch (err) {
+    console.error('DM Request Update Error:', err);
     res.status(500).send('Server error');
   }
 });
@@ -173,6 +344,9 @@ router.post('/message', vaultAuth, async (req, res) => {
 
     if (!receiverId || !trimmedMessage) {
       return res.status(400).json({ msg: 'receiverId and message are required' });
+    }
+    if (!await canStartDirectDm(senderId, receiverId)) {
+      return res.status(403).json({ msg: 'This private account must accept your DM request first' });
     }
 
     const newMessage = await persistMessage({
@@ -290,7 +464,8 @@ router.get('/history/:otherUserId', vaultAuth, async (req, res) => {
       $or: [
         { senderId: req.vaultUser.id, receiverId: req.params.otherUserId },
         { senderId: req.params.otherUserId, receiverId: req.vaultUser.id }
-      ]
+      ],
+      deletedBy: { $ne: req.vaultUser.id }
     })
       .select('senderId receiverId encryptedMessage replyTo reactions seen createdAt')
       .populate('replyTo', 'encryptedMessage senderId')
@@ -319,23 +494,23 @@ router.get('/history/:otherUserId', vaultAuth, async (req, res) => {
 });
 
 // @route   GET api/sync-center/search
-// @desc    Search for users by FitID or Alias
+// @desc    Search public Discovery handles
 router.get('/search', vaultAuth, async (req, res) => {
-  const { q } = req.query;
-  if (!q) return res.json([]);
+  const query = String(req.query.q || '').trim();
+  const escapedQuery = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
   try {
     const users = await User.find({
       $and: [
         { _id: { $ne: req.vaultUser.id } }, // Don't find yourself
-        {
+        ...(escapedQuery ? [{
           $or: [
-            { fitId: { $regex: q, $options: 'i' } },
-            { alias: { $regex: q, $options: 'i' } }
+            { fitId: { $regex: escapedQuery, $options: 'i' } },
+            { alias: { $regex: escapedQuery, $options: 'i' } }
           ]
-        }
+        }] : [{ isDiscoverable: { $ne: false } }])
       ]
-    }).select('alias fitId avatarSeed isOnline').limit(10).lean();
+    }).select('alias fitId avatarSeed isOnline isDiscoverable').sort({ fitId: 1 }).limit(100).lean();
     
     res.json(users);
   } catch (err) {

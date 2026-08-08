@@ -3,18 +3,25 @@ const router = express.Router();
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
-const { generateAlias } = require('../utils/alias');
 const { auth, vaultAuth } = require('../middleware/auth');
+
+const HANDLE_PATTERN = /^[a-z0-9_.]{3,24}$/i;
+
+const normalizeHandle = (value) => String(value || '').trim().toLowerCase();
 
 // @route   POST api/auth/register
 // @desc    Register user
 router.post('/register', async (req, res) => {
-  const { username, email, password, unlockCode, fitId } = req.body;
-  const normalizedFitId = (fitId || '').trim().toUpperCase();
+  const { username, alias, email, password, unlockCode, fitId, isDiscoverable = true } = req.body;
+  const normalizedFitId = normalizeHandle(fitId);
+  const normalizedAlias = String(alias || '').trim();
 
   try {
-    if (!normalizedFitId) {
-      return res.status(400).json({ msg: 'FitID is required' });
+    if (!HANDLE_PATTERN.test(normalizedFitId)) {
+      return res.status(400).json({ msg: 'FitID must be 3-24 letters, numbers, dots, or underscores' });
+    }
+    if (normalizedAlias.length < 3 || normalizedAlias.length > 24) {
+      return res.status(400).json({ msg: 'Display name must be 3-24 characters' });
     }
 
     let user = await User.findOne({ email });
@@ -22,6 +29,9 @@ router.post('/register', async (req, res) => {
 
     user = await User.findOne({ username });
     if (user) return res.status(400).json({ msg: 'Username already exists' });
+
+    user = await User.findOne({ alias: normalizedAlias });
+    if (user) return res.status(400).json({ msg: 'Display name already exists' });
 
     user = await User.findOne({ fitId: normalizedFitId });
     if (user) return res.status(400).json({ msg: 'FitID already taken' });
@@ -31,8 +41,9 @@ router.post('/register', async (req, res) => {
       email,
       passwordHash: await bcrypt.hash(String(password), 10),
       unlockCode: await bcrypt.hash(String(unlockCode), 10),
-      alias: generateAlias(),
+      alias: normalizedAlias,
       fitId: normalizedFitId,
+      isDiscoverable: Boolean(isDiscoverable),
       avatarSeed: Math.random().toString(36).substring(7)
     });
 
@@ -41,7 +52,7 @@ router.post('/register', async (req, res) => {
     const payload = { user: { id: user.id } };
     const token = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '7d' });
 
-    res.json({ token, user: { id: user.id, username, alias: user.alias, fitId: user.fitId } });
+    res.json({ token, user: { id: user.id, username, alias: user.alias, fitId: user.fitId, isDiscoverable: user.isDiscoverable } });
   } catch (err) {
     console.error(err.message);
     res.status(500).send('Server error');
@@ -63,7 +74,7 @@ router.post('/login', async (req, res) => {
     const payload = { user: { id: user.id } };
     const token = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '7d' });
 
-    res.json({ token, user: { id: user.id, username: user.username, alias: user.alias, fitId: user.fitId } });
+    res.json({ token, user: { id: user.id, username: user.username, alias: user.alias, fitId: user.fitId, isDiscoverable: user.isDiscoverable } });
   } catch (err) {
     console.error(err.message);
     res.status(500).send('Server error');
@@ -71,23 +82,50 @@ router.post('/login', async (req, res) => {
 });
 
 // @route   PATCH api/auth/profile
-// @desc    Update username
+// @desc    Update one or more profile fields
 router.patch('/profile', auth, async (req, res) => {
-  const username = (req.body.username || '').trim();
+  const updates = {};
+  const hasField = (field) => Object.prototype.hasOwnProperty.call(req.body, field);
 
   try {
-    if (username.length < 3 || username.length > 24) {
-      return res.status(400).json({ msg: 'Username must be 3-24 characters' });
+    if (hasField('username')) {
+      const username = String(req.body.username || '').trim();
+      if (username.length < 3 || username.length > 24) {
+        return res.status(400).json({ msg: 'Username must be 3-24 characters' });
+      }
+      updates.username = username;
     }
+    if (hasField('alias')) {
+      const alias = String(req.body.alias || '').trim();
+      if (alias.length < 3 || alias.length > 24) {
+        return res.status(400).json({ msg: 'Display name must be 3-24 characters' });
+      }
+      updates.alias = alias;
+    }
+    if (hasField('fitId')) {
+      const fitId = normalizeHandle(req.body.fitId);
+      if (!HANDLE_PATTERN.test(fitId)) {
+        return res.status(400).json({ msg: 'FitID must be 3-24 letters, numbers, dots, or underscores' });
+      }
+      updates.fitId = fitId;
+    }
+    if (hasField('isDiscoverable')) updates.isDiscoverable = Boolean(req.body.isDiscoverable);
+    if (!Object.keys(updates).length) return res.status(400).json({ msg: 'No profile changes supplied' });
 
-    const existingUser = await User.findOne({ username, _id: { $ne: req.user.id } });
-    if (existingUser) return res.status(400).json({ msg: 'Username already exists' });
+    const uniquenessChecks = ['username', 'alias', 'fitId']
+      .filter((field) => updates[field])
+      .map((field) => ({ [field]: updates[field] }));
+    const existingUser = uniquenessChecks.length && await User.findOne({ _id: { $ne: req.user.id }, $or: uniquenessChecks });
+    if (existingUser) {
+      const field = existingUser.username === updates.username ? 'Username' : existingUser.alias === updates.alias ? 'Display name' : 'FitID';
+      return res.status(400).json({ msg: `${field} already exists` });
+    }
 
     const user = await User.findByIdAndUpdate(
       req.user.id,
-      { username },
+      updates,
       { new: true }
-    ).select('username alias fitId');
+    ).select('username alias fitId isDiscoverable');
 
     if (!user) return res.status(404).json({ msg: 'User not found' });
 
@@ -96,7 +134,8 @@ router.patch('/profile', auth, async (req, res) => {
         id: user.id,
         username: user.username,
         alias: user.alias,
-        fitId: user.fitId
+        fitId: user.fitId,
+        isDiscoverable: user.isDiscoverable
       }
     });
   } catch (err) {

@@ -118,6 +118,9 @@ const Profile = () => {
   const { user, token, logout, unreadCount, updateUser } = useAuth();
   const [copied, setCopied] = useState(false);
   const [usernameDraft, setUsernameDraft] = useState(user?.username || '');
+  const [aliasDraft, setAliasDraft] = useState(user?.alias || '');
+  const [fitIdDraft, setFitIdDraft] = useState(user?.fitId || '');
+  const [isDiscoverable, setIsDiscoverable] = useState(user?.isDiscoverable ?? true);
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [savingProfile, setSavingProfile] = useState(false);
@@ -131,22 +134,28 @@ const Profile = () => {
     }
   };
 
-  const saveUsername = async () => {
+  const saveProfile = async (changes: Record<string, string | boolean>) => {
     if (!token) return;
     setSavingProfile(true);
     try {
       const res = await axios.patch(
         buildApiUrl('/api/auth/profile'),
-        { username: usernameDraft },
+        changes,
         { headers: { 'x-auth-token': token } }
       );
       updateUser(res.data.user);
+      setUsernameDraft(res.data.user.username);
+      setAliasDraft(res.data.user.alias);
+      setFitIdDraft(res.data.user.fitId);
+      setIsDiscoverable(res.data.user.isDiscoverable);
     } catch (err: any) {
-      window.alert(err.response?.data?.msg || 'Failed to update username');
+      window.alert(err.response?.data?.msg || 'Failed to update profile');
     } finally {
       setSavingProfile(false);
     }
   };
+
+  const toggleDiscoverability = () => saveProfile({ isDiscoverable: !isDiscoverable });
 
   const savePassword = async () => {
     if (!token) return;
@@ -193,8 +202,8 @@ const Profile = () => {
         <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-4">Secret Identity</h3>
         <div className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-100">
           <div>
-            <div className="text-[10px] text-slate-400 uppercase font-bold">Your Unique FitID</div>
-            <div className="font-mono font-bold text-slate-700">{user?.fitId}</div>
+            <div className="text-[10px] text-slate-400 uppercase font-bold">Public Discovery FitID</div>
+            <div className="font-mono font-bold text-slate-700">@{user?.fitId}</div>
           </div>
           <button 
             onClick={copyFitId}
@@ -204,14 +213,14 @@ const Profile = () => {
           </button>
         </div>
         <p className="text-[10px] text-slate-400 mt-3 italic px-1">
-          Share this ID with trusted nodes to initiate a secure uplink.
+          This public ID is visible in Discovery. A DM opens only after you accept a request.
         </p>
       </div>
 
       <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-100 space-y-4">
         <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest">Settings</h3>
         <div className="space-y-3 border-b border-slate-50 pb-4">
-          <label className="text-sm font-semibold text-slate-600">Username</label>
+          <label className="text-sm font-semibold text-slate-600">Account username</label>
           <div className="flex gap-2">
             <input
               value={usernameDraft}
@@ -220,13 +229,72 @@ const Profile = () => {
             />
             <button
               type="button"
-              onClick={saveUsername}
+              onClick={() => saveProfile({ username: usernameDraft })}
               disabled={savingProfile || usernameDraft.trim() === user?.username}
               className="rounded-2xl bg-fitness-primary px-4 py-3 text-xs font-bold uppercase tracking-widest text-white disabled:opacity-40"
             >
               {savingProfile ? 'Saving' : 'Save'}
             </button>
           </div>
+        </div>
+        <div className="space-y-3 border-b border-slate-50 pb-4">
+          <label className="text-sm font-semibold text-slate-600">Display name</label>
+          <div className="flex gap-2">
+            <input
+              value={aliasDraft}
+              onChange={(e) => setAliasDraft(e.target.value)}
+              placeholder="Choose a unique name"
+              className="min-w-0 flex-1 rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3 text-sm text-slate-700 outline-none focus:border-fitness-primary"
+            />
+            <button
+              type="button"
+              onClick={() => saveProfile({ alias: aliasDraft })}
+              disabled={savingProfile || aliasDraft.trim() === user?.alias}
+              className="rounded-2xl bg-fitness-primary px-4 py-3 text-xs font-bold uppercase tracking-widest text-white disabled:opacity-40"
+            >
+              {savingProfile ? 'Saving' : 'Save'}
+            </button>
+          </div>
+          <p className="text-xs text-slate-400">This replaces random names such as NovaCipher921 and must be unique.</p>
+        </div>
+        <div className="space-y-3 border-b border-slate-50 pb-4">
+          <label className="text-sm font-semibold text-slate-600">Public FitID</label>
+          <div className="flex gap-2">
+            <input
+              value={fitIdDraft}
+              onChange={(e) => setFitIdDraft(e.target.value.toLowerCase())}
+              placeholder="john_doe"
+              maxLength={24}
+              className="min-w-0 flex-1 rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3 text-sm text-slate-700 outline-none focus:border-fitness-primary"
+            />
+            <button
+              type="button"
+              onClick={() => saveProfile({ fitId: fitIdDraft })}
+              disabled={savingProfile || fitIdDraft.trim() === user?.fitId}
+              className="rounded-2xl bg-fitness-primary px-4 py-3 text-xs font-bold uppercase tracking-widest text-white disabled:opacity-40"
+            >
+              {savingProfile ? 'Saving' : 'Save'}
+            </button>
+          </div>
+          <p className="text-xs text-slate-400">Use 3-24 letters, numbers, dots, or underscores. Examples: john_doe, john.doe.</p>
+        </div>
+        <div className="flex items-center justify-between gap-4 border-b border-slate-50 pb-4">
+          <div>
+            <div className="text-sm font-semibold text-slate-600">Discovery visibility</div>
+            <p className="mt-1 text-xs text-slate-400">{isDiscoverable ? 'Public: your FitID can be found in Discovery.' : 'Private: your FitID is hidden from Discovery.'}</p>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={isDiscoverable}
+            aria-label="Toggle public Discovery visibility"
+            onClick={toggleDiscoverability}
+            disabled={savingProfile}
+            className={`relative h-9 w-20 rounded-full px-1 text-[10px] font-bold transition-colors disabled:opacity-50 ${isDiscoverable ? 'bg-fitness-primary text-white' : 'bg-slate-200 text-slate-500'}`}
+          >
+            <span className={`absolute top-1 flex h-7 w-7 items-center justify-center rounded-full bg-white shadow transition-transform ${isDiscoverable ? 'translate-x-11' : 'translate-x-0'}`} />
+            <span className="relative z-10">{isDiscoverable ? 'PUBLIC' : 'PRIVATE'}</span>
+          </button>
         </div>
         <div className="space-y-3 border-b border-slate-50 pb-4">
           <label className="text-sm font-semibold text-slate-600">Change Password</label>

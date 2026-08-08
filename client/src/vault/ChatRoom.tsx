@@ -122,12 +122,41 @@ const ChatRoom: React.FC<{
   const [themeId, setThemeId] = useState<ChatThemeId>('matrix');
   const [isThemePanelOpen, setIsThemePanelOpen] = useState(false);
   const [isSavingTheme, setIsSavingTheme] = useState(false);
+  const [visualViewportHeight, setVisualViewportHeight] = useState<number | null>(null);
 
   const socketRef = useRef<Socket | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const typingTimeoutRef = useRef<any>(null);
   const reactionTimerRef = useRef<any>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const messageInputRef = useRef<HTMLInputElement>(null);
+
+  // Mobile browsers keep fixed overlays at their layout height when the keyboard
+  // opens. Use the visual viewport instead so the composer remains above it.
+  useEffect(() => {
+    const viewport = window.visualViewport;
+    if (!viewport) return;
+
+    const syncViewportHeight = () => setVisualViewportHeight(Math.round(viewport.height));
+    syncViewportHeight();
+    viewport.addEventListener('resize', syncViewportHeight);
+    viewport.addEventListener('scroll', syncViewportHeight);
+
+    return () => {
+      viewport.removeEventListener('resize', syncViewportHeight);
+      viewport.removeEventListener('scroll', syncViewportHeight);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!visualViewportHeight) return;
+    const scrollTimer = window.setTimeout(() => {
+      if (document.activeElement === messageInputRef.current) {
+        messageInputRef.current?.scrollIntoView({ block: 'nearest' });
+      }
+    }, 0);
+    return () => window.clearTimeout(scrollTimer);
+  }, [visualViewportHeight]);
 
   useEffect(() => {
     clearUnread();
@@ -429,7 +458,10 @@ const ChatRoom: React.FC<{
   const theme = CHAT_THEMES[themeId];
 
   return (
-    <div className={`flex flex-col h-full text-white font-sans overflow-hidden ${theme.shell}`}>
+    <div
+      className={`flex flex-col h-full shrink-0 text-white font-sans overflow-hidden ${theme.shell}`}
+      style={visualViewportHeight ? { height: `${visualViewportHeight}px` } : undefined}
+    >
       {/* Header */}
       <div className={`border-b backdrop-blur-md ${theme.header}`}>
         <div className="flex items-center gap-3 p-4">
@@ -779,7 +811,7 @@ const ChatRoom: React.FC<{
       </div>
 
       {/* Input */}
-      <div className={`p-4 backdrop-blur-xl border-t border-white/5 space-y-2 ${theme.panel}`}>
+      <div className={`p-4 pb-[calc(1rem+env(safe-area-inset-bottom))] backdrop-blur-xl border-t border-white/5 space-y-2 ${theme.panel}`}>
         <AnimatePresence>
           {replyingTo && (
             <motion.div 
@@ -812,6 +844,7 @@ const ChatRoom: React.FC<{
           </button>
           <input 
             type="text"
+            ref={messageInputRef}
             value={newMessage}
             onChange={handleTyping}
             placeholder="Transmit encrypted data..."
