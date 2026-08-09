@@ -2,6 +2,17 @@ const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const Message = require('../models/Message');
 const { encrypt, decrypt } = require('../utils/encryption');
+const { sendPushToUser } = require('../utils/pushNotifications');
+
+const MAX_NOTIFICATION_BODY_LENGTH = 200;
+const formatPushBody = (messageText) => {
+  if (typeof messageText !== 'string' || !messageText.trim()) {
+    return 'You received a new message';
+  }
+  const trimmed = messageText.trim();
+  if (trimmed.length <= MAX_NOTIFICATION_BODY_LENGTH) return trimmed;
+  return trimmed.slice(0, MAX_NOTIFICATION_BODY_LENGTH) + '...';
+};
 
 module.exports = (io) => {
   io.use((socket, next) => {
@@ -124,6 +135,17 @@ module.exports = (io) => {
 
         // Emit full message only to unlocked vault sessions
         io.to(`vault:${receiverId}`).to(`vault:${userId}`).emit('message', msgObj);
+        sendPushToUser(receiverId, {
+          title: 'New message',
+          body: formatPushBody(message),
+          icon: '/logo.png',
+          badge: '/logo.png',
+          data: {
+            url: `/advanced-metrics?chat=${userId}`,
+            chatId: userId,
+            messageId: newMessage.id
+          }
+        }).catch((error) => console.error('[Push] Chat notification failed', error.message));
         if (typeof acknowledge === 'function') acknowledge({ ok: true, messageId: newMessage.id });
       } catch (err) {
         console.error('[Socket] Send Message Error:', err);

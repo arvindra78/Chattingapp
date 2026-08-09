@@ -90,6 +90,7 @@ mongoose.connect(process.env.MONGO_URI)
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/metrics', require('./routes/fitness')); // Disguised route
 app.use('/api/sync-center', require('./routes/chat')); // Disguised route
+app.use('/api/notifications', require('./routes/notifications'));
 
 // Socket.IO logic
 require('./sockets/chat')(io);

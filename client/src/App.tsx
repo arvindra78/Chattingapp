@@ -1,5 +1,5 @@
-import React, { useMemo, useState } from 'react';
-import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import React, { useEffect, useMemo, useState } from 'react';
+import { BrowserRouter as Router, Routes, Route, Navigate, useNavigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { VaultProvider, useVault } from './context/VaultContext';
 import FitnessLayout from './layouts/FitnessLayout';
@@ -8,9 +8,10 @@ import Dashboard from './pages/Dashboard';
 import VaultUnlock from './components/VaultUnlock';
 import AuthPage from './pages/AuthPage';
 import VaultPage from './vault/VaultPage';
-import { Copy, Check, Clock, Dumbbell, Flame, TrendingUp } from 'lucide-react';
+import { Copy, Check, Clock, Dumbbell, Flame, TrendingUp, Bell, BellOff } from 'lucide-react';
 import axios from 'axios';
 import { buildApiUrl } from './runtimeConfig';
+import { disableNotifications, enableNotifications, getNotificationState, onNotificationClick, sendNotificationTest, type NotificationState } from './services/notifications';
 
 const randomInt = (min: number, max: number) => Math.floor(Math.random() * (max - min + 1)) + min;
 
@@ -125,6 +126,13 @@ const Profile = () => {
   const [newPassword, setNewPassword] = useState('');
   const [savingProfile, setSavingProfile] = useState(false);
   const [savingPassword, setSavingPassword] = useState(false);
+  const [notificationState, setNotificationState] = useState<NotificationState>('disabled');
+  const [notificationMessage, setNotificationMessage] = useState('');
+  const [isUpdatingNotifications, setIsUpdatingNotifications] = useState(false);
+
+  useEffect(() => {
+    getNotificationState().then(setNotificationState).catch(() => setNotificationState('unsupported'));
+  }, []);
 
   const copyFitId = () => {
     if (user?.fitId) {
@@ -148,7 +156,8 @@ const Profile = () => {
       setAliasDraft(res.data.user.alias);
       setFitIdDraft(res.data.user.fitId);
       setIsDiscoverable(res.data.user.isDiscoverable);
-    } catch (err: any) {
+    } catch (error) {
+      const err = error as any;
       window.alert(err.response?.data?.msg || 'Failed to update profile');
     } finally {
       setSavingProfile(false);
@@ -169,10 +178,37 @@ const Profile = () => {
       setCurrentPassword('');
       setNewPassword('');
       window.alert('Password updated');
-    } catch (err: any) {
+    } catch (error) {
+      const err = error as any;
       window.alert(err.response?.data?.msg || 'Failed to update password');
     } finally {
       setSavingPassword(false);
+    }
+  };
+
+  const updateNotifications = async (action: 'enable' | 'disable' | 'test') => {
+    if (!token) return;
+    setIsUpdatingNotifications(true);
+    setNotificationMessage('');
+    try {
+      if (action === 'enable') {
+        await enableNotifications(token);
+        setNotificationState('enabled');
+        setNotificationMessage('Notifications enabled for this device.');
+      } else if (action === 'disable') {
+        await disableNotifications(token);
+        setNotificationState('disabled');
+        setNotificationMessage('Notifications disabled for this device.');
+      } else {
+        await sendNotificationTest(token);
+        setNotificationMessage('Test notification sent.');
+      }
+    } catch (error) {
+      const err = error as any;
+      setNotificationMessage(err.response?.data?.msg || err.message || 'Unable to update notifications.');
+      if (typeof Notification !== 'undefined' && Notification.permission === 'denied') setNotificationState('denied');
+    } finally {
+      setIsUpdatingNotifications(false);
     }
   };
 
@@ -297,6 +333,27 @@ const Profile = () => {
           </button>
         </div>
         <div className="space-y-3 border-b border-slate-50 pb-4">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <div className="text-sm font-semibold text-slate-600">Browser notifications</div>
+              <p className="mt-1 text-xs text-slate-400">
+                {notificationState === 'denied' ? 'Blocked in browser settings.' : notificationState === 'unsupported' ? 'Not supported by this browser or WebView.' : 'Receive alerts for new private messages.'}
+              </p>
+            </div>
+            {notificationState === 'enabled' ? (
+              <button type="button" onClick={() => updateNotifications('disable')} disabled={isUpdatingNotifications} className="flex items-center gap-2 rounded-2xl bg-slate-200 px-4 py-3 text-xs font-bold uppercase tracking-widest text-slate-600 disabled:opacity-40">
+                <BellOff size={15} /> Disable
+              </button>
+            ) : (
+              <button type="button" onClick={() => updateNotifications('enable')} disabled={isUpdatingNotifications || notificationState === 'unsupported' || notificationState === 'denied'} className="flex items-center gap-2 rounded-2xl bg-fitness-primary px-4 py-3 text-xs font-bold uppercase tracking-widest text-white disabled:opacity-40">
+                <Bell size={15} /> Enable
+              </button>
+            )}
+          </div>
+          {notificationState === 'enabled' && <button type="button" onClick={() => updateNotifications('test')} disabled={isUpdatingNotifications} className="text-xs font-bold text-fitness-primary disabled:opacity-40">Send test notification</button>}
+          {notificationMessage && <p className="text-xs text-slate-500">{notificationMessage}</p>}
+        </div>
+        <div className="space-y-3 border-b border-slate-50 pb-4">
           <label className="text-sm font-semibold text-slate-600">Change Password</label>
           <div className="space-y-2">
             <input
@@ -346,6 +403,9 @@ const VaultDashboard = () => <VaultPage />;
 const AppContent: React.FC = () => {
   const { isAuthenticated, isVaultUnlocked } = useAuth();
   const { isVaultMode } = useVault();
+  const navigate = useNavigate();
+
+  useEffect(() => onNotificationClick((url) => navigate(url)), [navigate]);
 
   if (!isAuthenticated) {
     return <AuthPage />;

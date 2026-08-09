@@ -6,8 +6,19 @@ const User = require('../models/User');
 const ChatTheme = require('../models/ChatTheme');
 const { auth, vaultAuth } = require('../middleware/auth');
 const { encrypt, decrypt } = require('../utils/encryption');
+const { sendPushToUser } = require('../utils/pushNotifications');
 
 const CHAT_THEMES = new Set(['matrix', 'midnight', 'ember', 'ocean', 'violet', 'rose']);
+
+const MAX_NOTIFICATION_BODY_LENGTH = 200;
+const formatPushBody = (messageText) => {
+  if (typeof messageText !== 'string' || !messageText.trim()) {
+    return 'You received a new message';
+  }
+  const trimmed = messageText.trim();
+  if (trimmed.length <= MAX_NOTIFICATION_BODY_LENGTH) return trimmed;
+  return trimmed.slice(0, MAX_NOTIFICATION_BODY_LENGTH) + '...';
+};
 
 const getParticipantsKey = (userA, userB) => [userA.toString(), userB.toString()].sort().join(':');
 
@@ -51,6 +62,17 @@ const emitVaultMessage = async ({ io, senderId, receiverId, newMessage, plaintex
   });
 
   io.to(`vault:${receiverId}`).to(`vault:${senderId}`).emit('message', msgObj);
+  sendPushToUser(receiverId, {
+    title: 'New message',
+    body: formatPushBody(plaintextMessage),
+    icon: '/logo.png',
+    badge: '/logo.png',
+    data: {
+      url: `/advanced-metrics?chat=${senderId}`,
+      chatId: senderId.toString(),
+      messageId: newMessage.id
+    }
+  }).catch((error) => console.error('[Push] Chat notification failed', error.message));
   return msgObj;
 };
 

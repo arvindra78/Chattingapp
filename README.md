@@ -109,6 +109,9 @@ JWT_SECRET=your_fitness_jwt_secret
 VAULT_SECRET=your_vault_jwt_secret
 MESSAGE_ENCRYPTION_KEY=32_char_encryption_key
 CLIENT_URL=http://localhost:5173
+VAPID_SUBJECT=mailto:you@example.com
+VAPID_PUBLIC_KEY=your_vapid_public_key
+VAPID_PRIVATE_KEY=your_vapid_private_key
 ```
 
 #### Frontend (`client/.env`)
@@ -118,6 +121,19 @@ Create a `.env` file in the `client` directory:
 VITE_API_URL=http://localhost:5000
 VITE_SOCKET_URL=http://localhost:5000
 ```
+
+### Web Push setup
+
+Install dependencies, then generate a VAPID key pair:
+
+```bash
+npm install
+npx web-push generate-vapid-keys
+```
+
+Copy the generated public key, private key, and a contact URI (for example `mailto:you@example.com`) into the VAPID variables in `.env`. Never expose or commit the private key.
+
+Users can enable or disable browser notifications from Profile. New-message notifications intentionally use generic text and open the relevant Vault chat when clicked.
 
 ### Running the Application
 
