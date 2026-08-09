@@ -11,7 +11,7 @@ import VaultPage from './vault/VaultPage';
 import { Copy, Check, Clock, Dumbbell, Flame, TrendingUp, Bell, BellOff } from 'lucide-react';
 import axios from 'axios';
 import { buildApiUrl } from './runtimeConfig';
-import { disableNotifications, enableNotifications, getNotificationState, onNotificationClick, sendNotificationTest, type NotificationState } from './services/notifications';
+import { disableNotifications, enableNotifications, getNotificationProvider, getNotificationState, onNotificationClick, sendNotificationTest, type NotificationProvider, type NotificationState } from './services/notifications';
 
 const randomInt = (min: number, max: number) => Math.floor(Math.random() * (max - min + 1)) + min;
 
@@ -126,12 +126,23 @@ const Profile = () => {
   const [newPassword, setNewPassword] = useState('');
   const [savingProfile, setSavingProfile] = useState(false);
   const [savingPassword, setSavingPassword] = useState(false);
+  const [notificationProvider, setNotificationProvider] = useState<NotificationProvider>('unsupported');
   const [notificationState, setNotificationState] = useState<NotificationState>('disabled');
   const [notificationMessage, setNotificationMessage] = useState('');
   const [isUpdatingNotifications, setIsUpdatingNotifications] = useState(false);
 
   useEffect(() => {
-    getNotificationState().then(setNotificationState).catch(() => setNotificationState('unsupported'));
+    const refreshNotificationProvider = () => {
+      const provider = getNotificationProvider();
+      setNotificationProvider(provider);
+      getNotificationState(provider)
+        .then(setNotificationState)
+        .catch(() => setNotificationState(provider === 'unsupported' ? 'unsupported' : 'disabled'));
+    };
+
+    refreshNotificationProvider();
+    window.addEventListener('androidBridgeReady', refreshNotificationProvider);
+    return () => window.removeEventListener('androidBridgeReady', refreshNotificationProvider);
   }, []);
 
   const copyFitId = () => {
@@ -192,13 +203,15 @@ const Profile = () => {
     setNotificationMessage('');
     try {
       if (action === 'enable') {
-        await enableNotifications(token);
-        setNotificationState('enabled');
+        await enableNotifications(token, notificationProvider);
+        setNotificationState(await getNotificationState(notificationProvider));
         setNotificationMessage('Notifications enabled for this device.');
       } else if (action === 'disable') {
-        await disableNotifications(token);
-        setNotificationState('disabled');
-        setNotificationMessage('Notifications disabled for this device.');
+        const state = await disableNotifications(token, notificationProvider);
+        setNotificationState(state);
+        setNotificationMessage(notificationProvider === 'native-android'
+          ? 'Native notifications are managed in Android settings.'
+          : 'Notifications disabled for this device.');
       } else {
         await sendNotificationTest(token);
         setNotificationMessage('Test notification sent.');
@@ -335,7 +348,7 @@ const Profile = () => {
         <div className="space-y-3 border-b border-slate-50 pb-4">
           <div className="flex items-center justify-between gap-4">
             <div>
-              <div className="text-sm font-semibold text-slate-600">Browser notifications</div>
+              <div className="text-sm font-semibold text-slate-600">Notifications</div>
               <p className="mt-1 text-xs text-slate-400">
                 {notificationState === 'denied' ? 'Blocked in browser settings.' : notificationState === 'unsupported' ? 'Not supported by this browser or WebView.' : 'Receive alerts for new private messages.'}
               </p>
@@ -350,7 +363,7 @@ const Profile = () => {
               </button>
             )}
           </div>
-          {notificationState === 'enabled' && <button type="button" onClick={() => updateNotifications('test')} disabled={isUpdatingNotifications} className="text-xs font-bold text-fitness-primary disabled:opacity-40">Send test notification</button>}
+          {notificationProvider === 'web-push' && notificationState === 'enabled' && <button type="button" onClick={() => updateNotifications('test')} disabled={isUpdatingNotifications} className="text-xs font-bold text-fitness-primary disabled:opacity-40">Send test notification</button>}
           {notificationMessage && <p className="text-xs text-slate-500">{notificationMessage}</p>}
         </div>
         <div className="space-y-3 border-b border-slate-50 pb-4">
