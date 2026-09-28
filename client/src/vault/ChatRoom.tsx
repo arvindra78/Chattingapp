@@ -811,7 +811,7 @@ const ChatRoom: React.FC<{
       </div>
 
       {/* Input */}
-      <div className={`p-4 pb-[calc(1rem+env(safe-area-inset-bottom))] backdrop-blur-xl border-t border-white/5 space-y-2 ${theme.panel}`}>
+      <div className={`p-4 pb-[calc(1rem+env(keyboard-inset-height,0px)+env(safe-area-inset-bottom,0px))] backdrop-blur-xl border-t border-white/5 space-y-2 ${theme.panel}`}>
         <AnimatePresence>
           {replyingTo && (
             <motion.div 
