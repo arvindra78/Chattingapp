@@ -192,14 +192,32 @@ const ChatRoom: React.FC<{
     fetchHistory();
 
     const handleMessage = (msg: Message) => {
-      if ((msg.senderId === receiverId && msg.receiverId === user?.id) || 
-          (msg.senderId === user?.id && msg.receiverId === receiverId)) {
-        setMessages(prev => [...prev, msg]);
+      const isOwnOrReceiver = (msg.senderId === receiverId && msg.receiverId === user?.id) ||
+                               (msg.senderId === user?.id && msg.receiverId === receiverId);
+      if (!isOwnOrReceiver) return;
+
+      // If message contains a clientId, it's an echo of our optimistic message
+      if (msg.clientId !== undefined) {
+        // Replace the optimistic message with the real one from server
+        setMessages(prev => prev.map(m =>
+          m._id === msg.clientId ? { ...msg, _id: msg._id || msg.clientId } : m
+        ));
+        // If we sent the message, mark as seen? Actually we are sender, so we don't markSeen for ourselves.
+        // But if the receiver is the other user, we already handled in send path? We'll keep as before.
         if (msg.senderId === receiverId) {
           socket.emit('markSeen', { senderId: receiverId });
           clearUnread();
           refreshUnreadCount();
         }
+        return;
+      }
+
+      // Regular message (from other user or system)
+      setMessages(prev => [...prev, msg]);
+      if (msg.senderId === receiverId) {
+        socket.emit('markSeen', { senderId: receiverId });
+        clearUnread();
+        refreshUnreadCount();
       }
     };
 
@@ -303,7 +321,7 @@ const ChatRoom: React.FC<{
     reader.readAsDataURL(file);
   };
 
-  const sendMessage = async (payloadOverride?: Partial<any>) => {
+  const sendMessage = async (payloadOverride?: Partial<any>, clientId?: string) => {
     const trimmedMessage = newMessage.trim();
     if (!trimmedMessage && !payloadOverride) return;
 
@@ -311,7 +329,8 @@ const ChatRoom: React.FC<{
       receiverId,
       message: trimmedMessage,
       replyTo: replyingTo?._id,
-      ...payloadOverride
+      ...payloadOverride,
+      ...(clientId !== undefined ? { clientId } : {})
     };
 
     const sendViaHttp = async () => {
@@ -348,15 +367,48 @@ const ChatRoom: React.FC<{
       }
     }
 
-    if (!payloadOverride) setNewMessage('');
+    if (!payloadOverride) {
+      setNewMessage('');
+      // Keep input focused and cursor at end
+      if (messageInputRef.current) {
+        messageInputRef.current.focus();
+        // Move cursor to end
+        const len = messageInputRef.current.value.length;
+        messageInputRef.current.setSelectionRange(len, len);
+      }
+    }
     setReplyTo(null);
   };
 
   const handleSend = (e: React.FormEvent) => {
     e.preventDefault();
-    sendMessage().catch((err) => {
+    // Generate temporary ID for optimistic message
+    const tempId = `temp-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    const trimmedMessage = newMessage.trim();
+    if (trimmedMessage) {
+      // Create optimistic message
+      const optimisticMessage: Message = {
+        _id: tempId,
+        senderId: user?.id || '',
+        receiverId,
+        message: trimmedMessage,
+        messageType: 'text',
+        createdAt: new Date().toISOString(),
+        seen: false,
+        reactions: []
+      };
+      // Add to messages optimistically
+      setMessages(prev => [...prev, optimisticMessage]);
+    }
+    sendMessage(undefined, tempId).catch((err) => {
       console.error('Send Message Error:', err);
       window.alert('Failed to send message. Please check your connection and try again.');
+      // Remove optimistic message on error
+      setMessages(prev => prev.filter(m => m._id !== tempId));
+      // Refocus input after error
+      if (messageInputRef.current) {
+        messageInputRef.current.focus();
+      }
     });
   };
 
